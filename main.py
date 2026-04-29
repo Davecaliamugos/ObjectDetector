@@ -10,7 +10,6 @@ from ultralytics import YOLO
 from PIL import Image
 import torch
 import mediapipe as mp
-import pyttsx3
 
 cv2.ocl.setUseOpenCL(False)
 
