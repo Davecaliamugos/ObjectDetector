@@ -560,6 +560,18 @@ header {
     min-height: 0 !important;
     padding: 0 !important;
 }
+/* Ensure sidebar toggle is visible */
+button[kind="header"],
+header button[aria-label*="Sidebar"],
+header button[aria-label*="sidebar"] {
+    display: flex !important;
+    visibility: visible !important;
+}
+/* Ensure sidebar is visible */
+section[data-testid="stSidebar"] {
+    display: block !important;
+    visibility: visible !important;
+}
 
 /* ═══════════════════════════════════════════════════════════
    STOP BUTTON AREA
