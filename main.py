@@ -815,16 +815,23 @@ def draw_hands(frame, gestures):
     return frame
 
 
-_mp_face = mp.solutions.face_mesh
-_FACE_CONTOURS = _mp_face.FACEMESH_CONTOURS
-
 @st.cache_resource
 def _get_face_detector(min_conf=0.5):
+    import mediapipe as mp
+    _mp_face = mp.solutions.face_mesh
     return _mp_face.FaceMesh(
         static_image_mode=False, max_num_faces=2,
         refine_landmarks=True, min_detection_confidence=min_conf,
         min_tracking_confidence=min_conf,
     )
+
+@st.cache_resource
+def _get_face_contours():
+    import mediapipe as mp
+    _mp_face = mp.solutions.face_mesh
+    return _mp_face.FACEMESH_CONTOURS
+
+_FACE_CONTOURS = None
 
 _L_EYE_TOP = 159; _L_EYE_BOT = 145
 _R_EYE_TOP = 386; _R_EYE_BOT = 374
@@ -879,10 +886,11 @@ def detect_faces(frame, face_detector):
     return faces
 
 def draw_faces(frame, faces):
+    contours = _get_face_contours()
     for f in faces:
         flm = f["landmarks"]
         _mp_draw.draw_landmarks(
-            frame, flm, _FACE_CONTOURS,
+            frame, flm, contours,
             landmark_drawing_spec=_mp_draw.DrawingSpec(color=(200, 200, 255), thickness=1, circle_radius=1),
             connection_drawing_spec=_mp_draw.DrawingSpec(color=(100, 100, 160), thickness=1),
         )
