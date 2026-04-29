@@ -1,6 +1,4 @@
-# ============================================================
-# PHASE 1: IMPORTS
-# ============================================================
+
 import streamlit as st
 import cv2
 import numpy as np
@@ -17,9 +15,6 @@ import pyttsx3
 cv2.ocl.setUseOpenCL(False)
 
 
-# ============================================================
-# UNIVERSAL FRAME SANITISER
-# ============================================================
 def to_cpu_mat(frame) -> np.ndarray:
     if isinstance(frame, cv2.UMat):
         frame = frame.get()
@@ -41,9 +36,6 @@ def to_cpu_mat(frame) -> np.ndarray:
     return frame
 
 
-# ============================================================
-# PHASE 2: PAGE CONFIG & CSS
-# ============================================================
 st.set_page_config(
     page_title="Live Object Detection & Tracing",
     page_icon="◉",
@@ -593,9 +585,7 @@ header button[data-testid="stSidebarToggle"] {
 """, unsafe_allow_html=True)
 
 
-# ============================================================
-# PHASE 3: MODEL LOADER
-# ============================================================
+
 @st.cache_resource
 def load_yolo_model(model_size: str = "yolov8n"):
     try:
@@ -609,9 +599,7 @@ def load_yolo_model(model_size: str = "yolov8n"):
         return None
 
 
-# ============================================================
-# PHASE 4: COLOUR PALETTE
-# ============================================================
+
 _RNG = np.random.default_rng(42)
 _CLASS_COLORS = _RNG.integers(80, 220, size=(300, 3), dtype=np.uint8)
 _PERSON_COLOR = (71, 68, 239)
@@ -637,9 +625,6 @@ def _get_color(class_name: str, class_id: int) -> tuple:
     return int(c[0]), int(c[1]), int(c[2])
 
 
-# ============================================================
-# PHASE 5: DETECTION ENGINE
-# ============================================================
 def detect_objects(frame, model, confidence_threshold=0.5, iou_threshold=0.45):
     frame = to_cpu_mat(frame)
     detections = []
@@ -730,18 +715,14 @@ def draw_detections(frame, detections, human_detected=False):
     return frame
 
 
-# ============================================================
-# PHASE 6: PIL CONVERSION
-# ============================================================
+
 def frame_to_pil(frame):
     frame = to_cpu_mat(frame)
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     return Image.fromarray(np.ascontiguousarray(rgb, dtype=np.uint8))
 
 
-# ============================================================
-# PHASE 7: FPS COUNTER
-# ============================================================
+
 class FPSCounter:
     def __init__(self, n=30):
         self._ts = collections.deque(maxlen=n)
@@ -756,9 +737,7 @@ class FPSCounter:
         return 0.0 if dt == 0 else (len(self._ts) - 1) / dt
 
 
-# ============================================================
-# PHASE 7b: HAND GESTURE DETECTION (MediaPipe)
-# ============================================================
+
 _mp_hands = mp.solutions.hands
 _mp_draw  = mp.solutions.drawing_utils
 _mp_style = mp.solutions.drawing_styles
@@ -836,9 +815,6 @@ def draw_hands(frame, gestures):
     return frame
 
 
-# ============================================================
-# PHASE 7c: FACIAL EXPRESSION DETECTION (MediaPipe Face Mesh)
-# ============================================================
 _mp_face = mp.solutions.face_mesh
 _FACE_CONTOURS = _mp_face.FACEMESH_CONTOURS
 
@@ -921,11 +897,7 @@ def draw_faces(frame, faces):
     return frame
 
 
-# ============================================================
-# PHASE 7d: GESTURE-DRIVEN PARTICLE SYSTEM
-# FIX 4: Particles made much more visible — larger radius, full
-# opacity draw, addWeighted ratio flipped, + neon outline rings.
-# ============================================================
+
 _INDEX_MCP  = 5
 _MIDDLE_MCP = 9
 _RING_MCP   = 13
@@ -1090,9 +1062,7 @@ def _spawn_for_gesture(ps, gesture, cx, cy, dir_x=None, dir_y=None):
         ps.spawn(cx, cy, np.random.randn()*10, np.random.randn()*10, color, n=1)
 
 
-# ============================================================
-# PHASE 8: st.image COMPAT HELPER
-# ============================================================
+
 def _render_image(placeholder, img, caption=""):
     if "_img_style" not in st.session_state:
         import inspect
@@ -1108,9 +1078,6 @@ def _render_image(placeholder, img, caption=""):
         placeholder.image(img, caption=caption)
 
 
-# ============================================================
-# PHASE 8.5: TEXT-TO-SPEECH (Windows PowerShell)
-# ============================================================
 import subprocess
 import platform
 
@@ -1125,10 +1092,6 @@ def _speak(text):
     except Exception:
         pass
 
-
-# ============================================================
-# PHASE 9: SIDEBAR
-# ============================================================
 def render_sidebar():
     st.sidebar.markdown("""
     <div style="display:flex;align-items:center;gap:10px;
@@ -1247,16 +1210,6 @@ def render_sidebar():
     }
 
 
-# ============================================================
-# PHASE 10: DETECTION LOOP
-# FIX 2: Stop detection no longer crashes the server.
-# The stop button sets running=False; the loop exits cleanly.
-# We do NOT call st.rerun() inside `finally` — that caused the
-# server to restart the script mid-stream. Instead the loop just
-# breaks, the function returns, and main() re-renders idle state
-# on the NEXT natural Streamlit rerun (triggered by user action
-# or we set a flag that causes one safe rerun at the end).
-# ============================================================
 def run_detection(config, model):
     # Stop button — top of page, same position as Start button
     stop_col, _ = st.columns([1, 3])
@@ -1635,9 +1588,7 @@ def run_detection(config, model):
         st.session_state["running"] = False
 
 
-# ============================================================
-# PHASE 11: MAIN
-# ============================================================
+
 def main():
     if "running" not in st.session_state:
         st.session_state["running"] = False
