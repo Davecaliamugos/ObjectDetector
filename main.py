@@ -560,18 +560,6 @@ header {
     min-height: 0 !important;
     padding: 0 !important;
 }
-/* Hide deploy link but keep sidebar toggle */
-header > div:first-child > a { display: none !important; }
-/* Ensure sidebar toggle is always visible */
-button[kind="header"],
-header button[aria-label*="Sidebar"],
-header button[aria-label*="sidebar"],
-header button[data-testid="collapsedSidebarIcon"],
-header button[data-testid="stSidebarToggle"] {
-    display: flex !important;
-    visibility: visible !important;
-    opacity: 1 !important;
-}
 
 /* ═══════════════════════════════════════════════════════════
    STOP BUTTON AREA
