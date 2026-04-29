@@ -5,3 +5,4 @@ opencv-python>=4.8.0
 # conda install av -c conda-forge
 streamlit-webrtc>=0.44.0
 ultralytics>=8.0.0
+mediapipe>=0.10.0
