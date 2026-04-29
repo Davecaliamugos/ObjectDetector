@@ -553,26 +553,46 @@ div[data-testid="stToolbar"],
 div[data-testid="stDecoration"],
 div[data-testid="stStatusWidget"],
 div[data-testid="metric-container"] {
-    display: none !important; visibility: hidden !important;
+    display: none !important; 
+    visibility: hidden !important;
 }
+
+/* Keep header visible but minimal - MUST have height for sidebar toggle */
 header {
-    background: none !important; box-shadow: none !important;
+    background: none !important; 
+    box-shadow: none !important;
+    min-height: 48px !important;  /* Critical: give it height */
+    padding: 8px 1rem !important; /* Critical: give it padding */
+    border-bottom: 1px solid var(--border-faint) !important;
 }
-/* Keep the header visible but invisible — so the sidebar toggle stays accessible */
-header[data-testid="stHeader"] {
-    background: transparent !important;
-    height: 2.875rem !important;
-    min-height: 2.875rem !important;
-}
-/* Ensure ALL header buttons (sidebar toggle, etc.) stay visible */
-header button,
-header [data-testid="baseButton-header"],
-header [data-testid="collapsedControl"],
-div[data-testid="collapsedControl"] {
+
+/* Sidebar toggle button - multiple selectors to catch all variants */
+header button[kind="header"],
+header button[aria-label="Open sidebar"],
+header button[aria-label="Close sidebar"],
+header button[data-testid="stSidebarToggle"],
+button[data-testid="stSidebarToggle"],
+[data-testid="stSidebar"] ~ div button,
+header > div > button:first-child {
     display: flex !important;
     visibility: visible !important;
     opacity: 1 !important;
-    pointer-events: all !important;
+    z-index: 999999 !important;
+    position: relative !important;
+}
+
+/* Ensure sidebar container stays accessible */
+section[data-testid="stSidebar"] {
+    display: block !important;
+    visibility: visible !important;
+    z-index: 999998 !important;
+}
+
+/* Make sure the hamburger icon itself is visible */
+header svg,
+button svg {
+    display: block !important;
+    visibility: visible !important;
 }
 
 /* ═══════════════════════════════════════════════════════════
