@@ -557,20 +557,22 @@ div[data-testid="metric-container"] {
 }
 header {
     background: none !important; box-shadow: none !important;
-    min-height: 0 !important;
-    padding: 0 !important;
 }
-/* Ensure sidebar toggle is visible */
-button[kind="header"],
-header button[aria-label*="Sidebar"],
-header button[aria-label*="sidebar"] {
+/* Keep the header visible but invisible — so the sidebar toggle stays accessible */
+header[data-testid="stHeader"] {
+    background: transparent !important;
+    height: 2.875rem !important;
+    min-height: 2.875rem !important;
+}
+/* Ensure ALL header buttons (sidebar toggle, etc.) stay visible */
+header button,
+header [data-testid="baseButton-header"],
+header [data-testid="collapsedControl"],
+div[data-testid="collapsedControl"] {
     display: flex !important;
     visibility: visible !important;
-}
-/* Ensure sidebar is visible */
-section[data-testid="stSidebar"] {
-    display: block !important;
-    visibility: visible !important;
+    opacity: 1 !important;
+    pointer-events: all !important;
 }
 
 /* ═══════════════════════════════════════════════════════════
