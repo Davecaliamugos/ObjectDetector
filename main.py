@@ -737,16 +737,17 @@ class FPSCounter:
 
 
 
-_mp_hands = mp.solutions.hands
-_mp_draw  = mp.solutions.drawing_utils
-_mp_style = mp.solutions.drawing_styles
-
 @st.cache_resource
 def _get_hand_detector(max_hands=2, min_conf=0.6):
+    import mediapipe as mp
+    _mp_hands = mp.solutions.hands
     return _mp_hands.Hands(
         static_image_mode=False, max_num_hands=max_hands,
         min_detection_confidence=min_conf, min_tracking_confidence=min_conf,
     )
+
+_mp_draw  = mp.solutions.drawing_utils
+_mp_style = mp.solutions.drawing_styles
 
 _WRIST = 0
 _THUMB_TIP  = 4;  _THUMB_IP  = 3;  _THUMB_MCP = 2
