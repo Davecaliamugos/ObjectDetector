@@ -21,10 +21,14 @@ try:
     _MP_OK = True
     _MP_ERROR = ""
 except Exception as e:
-    import traceback
+    import traceback, io, sys
+    buf = io.StringIO()
+    traceback.print_exc(file=buf)
+    _MP_ERROR = buf.getvalue()
+    if not _MP_ERROR:
+        _MP_ERROR = f"No traceback. Type: {type(e).__name__}, Args: {e.args}, ExcInfo: {sys.exc_info()[0]}"
     mp = None
     _MP_OK = False
-    _MP_ERROR = traceback.format_exc()
 try:
     import pyttsx3
 except ImportError:
