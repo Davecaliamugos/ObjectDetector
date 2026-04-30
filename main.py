@@ -10,6 +10,7 @@ from ultralytics import YOLO
 from PIL import Image
 import torch
 import mediapipe as mp
+import pyttsx3
 
 cv2.ocl.setUseOpenCL(False)
 
@@ -169,6 +170,7 @@ html, .stApp {
     gap: 10px;
     padding: 16px 0 14px;
     border-bottom: 1px solid var(--border-faint);
+    margin-top: 32px;
     margin-bottom: 16px;
 }
 @media (min-width: 768px) {
@@ -552,37 +554,16 @@ label[data-testid="stWidgetLabel"] p {
 div[data-testid="stDecoration"],
 div[data-testid="stStatusWidget"],
 div[data-testid="metric-container"] {
-    display: none !important;
-    visibility: hidden !important;
+    display: none !important; visibility: hidden !important;
 }
-
-/* Hide specific toolbar items but KEEP the toolbar itself (contains sidebar toggle) */
-div[data-testid="stToolbar"] > div:first-child > a,
-div[data-testid="stToolbar"] > div:first-child > div {
+/* Hide deploy link specifically, not the whole toolbar */
+div[data-testid="stToolbar"] a[href*="deploy"] {
     display: none !important;
 }
-
-/* Keep header minimal but visible for toggle button */
+/* Make header blend with background */
 header {
-    background: none !important;
-    box-shadow: none !important;
-    min-height: 0 !important;
-    padding: 0 !important;
-}
-
-/* Ensure toolbar (which contains toggle) is visible */
-div[data-testid="stToolbar"] {
-    display: block !important;
-    visibility: visible !important;
-}
-
-/* Sidebar toggle button - always visible */
-button[data-testid="stSidebarToggle"],
-header button[aria-label*="Sidebar"],
-header button[aria-label*="sidebar"] {
-    display: flex !important;
-    visibility: visible !important;
-    opacity: 1 !important;
+    background: var(--bg-base) !important;
+    border-bottom: 1px solid var(--border-faint) !important;
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -749,22 +730,16 @@ class FPSCounter:
 
 
 
+_mp_hands = mp.solutions.hands
+_mp_draw  = mp.solutions.drawing_utils
+_mp_style = mp.solutions.drawing_styles
+
 @st.cache_resource
 def _get_hand_detector(max_hands=2, min_conf=0.6):
-    import mediapipe as mp
-    _mp_hands = mp.solutions.hands
     return _mp_hands.Hands(
         static_image_mode=False, max_num_hands=max_hands,
         min_detection_confidence=min_conf, min_tracking_confidence=min_conf,
     )
-
-@st.cache_resource
-def _get_mp_draw():
-    import mediapipe as mp
-    return mp.solutions.drawing_utils, mp.solutions.drawing_styles
-
-_mp_draw = None
-_mp_style = None
 
 _WRIST = 0
 _THUMB_TIP  = 4;  _THUMB_IP  = 3;  _THUMB_MCP = 2
@@ -801,20 +776,9 @@ def classify_gesture(lm, handedness) -> str:
     if not thumb and index and middle and ring and pinky: return "Four"
     return f"{count} Fingers"
 
-@st.cache_resource
-def _get_hand_styles():
-    import mediapipe as mp
-    _mp_hands = mp.solutions.hands
-    _mp_style = mp.solutions.drawing_styles
-    return (
-        _mp_hands.HAND_CONNECTIONS,
-        _mp_style.get_default_hand_landmarks_style(),
-        _mp_style.get_default_hand_connections_style()
-    )
-
-_HAND_CONNECTIONS = None
-_HAND_LANDMARK_STYLE = None
-_HAND_CONN_STYLE = None
+_HAND_CONNECTIONS = _mp_hands.HAND_CONNECTIONS
+_HAND_LANDMARK_STYLE = _mp_style.get_default_hand_landmarks_style()
+_HAND_CONN_STYLE = _mp_style.get_default_hand_connections_style()
 
 def detect_hands(frame, hand_detector):
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -828,11 +792,10 @@ def detect_hands(frame, hand_detector):
     return gestures
 
 def draw_hands(frame, gestures):
-    mp_draw, mp_style = _get_mp_draw()
-    connections, landmark_style, conn_style = _get_hand_styles()
     for g in gestures:
         hlm = g["landmarks"]
-        mp_draw.draw_landmarks(frame, hlm, connections, landmark_style, conn_style)
+        _mp_draw.draw_landmarks(frame, hlm, _HAND_CONNECTIONS,
+            _HAND_LANDMARK_STYLE, _HAND_CONN_STYLE)
         h, w = frame.shape[:2]
         wrist = hlm.landmark[_WRIST]
         cx, cy = int(wrist.x * w), int(wrist.y * h)
@@ -844,23 +807,16 @@ def draw_hands(frame, gestures):
     return frame
 
 
+_mp_face = mp.solutions.face_mesh
+_FACE_CONTOURS = _mp_face.FACEMESH_CONTOURS
+
 @st.cache_resource
 def _get_face_detector(min_conf=0.5):
-    import mediapipe as mp
-    _mp_face = mp.solutions.face_mesh
     return _mp_face.FaceMesh(
         static_image_mode=False, max_num_faces=2,
         refine_landmarks=True, min_detection_confidence=min_conf,
         min_tracking_confidence=min_conf,
     )
-
-@st.cache_resource
-def _get_face_contours():
-    import mediapipe as mp
-    _mp_face = mp.solutions.face_mesh
-    return _mp_face.FACEMESH_CONTOURS
-
-_FACE_CONTOURS = None
 
 _L_EYE_TOP = 159; _L_EYE_BOT = 145
 _R_EYE_TOP = 386; _R_EYE_BOT = 374
@@ -915,14 +871,12 @@ def detect_faces(frame, face_detector):
     return faces
 
 def draw_faces(frame, faces):
-    mp_draw, _ = _get_mp_draw()
-    contours = _get_face_contours()
     for f in faces:
         flm = f["landmarks"]
-        mp_draw.draw_landmarks(
-            frame, flm, contours,
-            landmark_drawing_spec=mp_draw.DrawingSpec(color=(200, 200, 255), thickness=1, circle_radius=1),
-            connection_drawing_spec=mp_draw.DrawingSpec(color=(100, 100, 160), thickness=1),
+        _mp_draw.draw_landmarks(
+            frame, flm, _FACE_CONTOURS,
+            landmark_drawing_spec=_mp_draw.DrawingSpec(color=(200, 200, 255), thickness=1, circle_radius=1),
+            connection_drawing_spec=_mp_draw.DrawingSpec(color=(100, 100, 160), thickness=1),
         )
         h, w = frame.shape[:2]
         nose = flm.landmark[_NOSE_TIP]
