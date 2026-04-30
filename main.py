@@ -549,50 +549,40 @@ label[data-testid="stWidgetLabel"] p {
    HIDE STREAMLIT CHROME
 ═══════════════════════════════════════════════════════════ */
 #MainMenu, footer,
-div[data-testid="stToolbar"],
 div[data-testid="stDecoration"],
 div[data-testid="stStatusWidget"],
 div[data-testid="metric-container"] {
-    display: none !important; 
+    display: none !important;
     visibility: hidden !important;
 }
 
-/* Keep header visible but minimal - MUST have height for sidebar toggle */
-header {
-    background: none !important; 
-    box-shadow: none !important;
-    min-height: 48px !important;  /* Critical: give it height */
-    padding: 8px 1rem !important; /* Critical: give it padding */
-    border-bottom: 1px solid var(--border-faint) !important;
+/* Hide specific toolbar items but KEEP the toolbar itself (contains sidebar toggle) */
+div[data-testid="stToolbar"] > div:first-child > a,
+div[data-testid="stToolbar"] > div:first-child > div {
+    display: none !important;
 }
 
-/* Sidebar toggle button - multiple selectors to catch all variants */
-header button[kind="header"],
-header button[aria-label="Open sidebar"],
-header button[aria-label="Close sidebar"],
-header button[data-testid="stSidebarToggle"],
+/* Keep header minimal but visible for toggle button */
+header {
+    background: none !important;
+    box-shadow: none !important;
+    min-height: 0 !important;
+    padding: 0 !important;
+}
+
+/* Ensure toolbar (which contains toggle) is visible */
+div[data-testid="stToolbar"] {
+    display: block !important;
+    visibility: visible !important;
+}
+
+/* Sidebar toggle button - always visible */
 button[data-testid="stSidebarToggle"],
-[data-testid="stSidebar"] ~ div button,
-header > div > button:first-child {
+header button[aria-label*="Sidebar"],
+header button[aria-label*="sidebar"] {
     display: flex !important;
     visibility: visible !important;
     opacity: 1 !important;
-    z-index: 999999 !important;
-    position: relative !important;
-}
-
-/* Ensure sidebar container stays accessible */
-section[data-testid="stSidebar"] {
-    display: block !important;
-    visibility: visible !important;
-    z-index: 999998 !important;
-}
-
-/* Make sure the hamburger icon itself is visible */
-header svg,
-button svg {
-    display: block !important;
-    visibility: visible !important;
 }
 
 /* ═══════════════════════════════════════════════════════════
