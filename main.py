@@ -1190,12 +1190,13 @@ def render_sidebar():
     particle_fx = st.sidebar.checkbox("Enable particle effects", value=False)
     particle_n  = st.sidebar.slider("Max particles", 50, 400, 200, 50, disabled=not particle_fx)
 
-    st.sidebar.markdown('<div class="sb-heading" style="margin-top:16px;">💾 Save Frames</div>', unsafe_allow_html=True)
+    st.sidebar.markdown('<div class="sb-heading" style="margin-top:16px;">⬛ Save Frames</div>', unsafe_allow_html=True)
     save_frames = st.sidebar.checkbox("Save detected frames", value=False)
     save_folder = st.sidebar.text_input("Save folder path", value="./saved_frames", disabled=not save_frames)
     save_interval = st.sidebar.slider("Save every N frames", 1, 60, 10, 1, disabled=not save_frames, help="Higher values save fewer frames to reduce disk usage")
+    max_saved = st.sidebar.slider("Max saved frames", 10, 200, 50, 10, disabled=not save_frames, help="Oldest frames auto-deleted when limit reached")
 
-    st.sidebar.markdown('<div class="sb-heading" style="margin-top:16px;">🔊 Audio Alerts</div>', unsafe_allow_html=True)
+    st.sidebar.markdown('<div class="sb-heading" style="margin-top:16px;">◈ Audio Alerts</div>', unsafe_allow_html=True)
     audio_alerts = st.sidebar.checkbox("Enable text-to-speech alerts", value=False)
 
     st.sidebar.markdown('<div class="sb-heading" style="margin-top:16px;">ℹ System</div>', unsafe_allow_html=True)
@@ -1241,6 +1242,7 @@ def render_sidebar():
         "save_frames":  save_frames,
         "save_folder":  save_folder,
         "save_interval": save_interval,
+        "max_saved":     max_saved,
         "audio_alerts": audio_alerts,
     }
 
@@ -1421,6 +1423,13 @@ def run_detection(config, model):
                 timestamp = time.strftime("%Y%m%d_%H%M%S")
                 filename = f"{config['save_folder']}/frame_{timestamp}_{frame_n}.jpg"
                 cv2.imwrite(filename, ann)
+                # Auto-cleanup: delete oldest frames if over max
+                try:
+                    existing = sorted([f for f in os.listdir(config["save_folder"]) if f.lower().endswith((".jpg", ".jpeg", ".png"))])
+                    while len(existing) > config["max_saved"]:
+                        os.remove(os.path.join(config["save_folder"], existing.pop(0)))
+                except Exception:
+                    pass
 
             fps_ctr.tick()
             frame_n    += 1
@@ -1710,34 +1719,125 @@ def main():
 
     st.markdown('<hr class="hdivider"/>', unsafe_allow_html=True)
 
-    if not is_live:
-        btn_c, _ = st.columns([1, 3])
-        with btn_c:
-            if st.button("▶ Start Detection", type="primary", key="start_btn"):
-                st.session_state["running"] = True
-                st.rerun()
-
-        st.markdown("""
-        <div class="hero-wrap">
-            <div class="hero-icon-ring">◎</div>
-            <div class="hero-heading">Ready to Detect</div>
-            <div class="hero-body">
-                Configure your model and camera in the sidebar,
-                then press <strong style="color:var(--green);">Start Detection</strong>
-                to begin real-time inference.
-            </div>
-            <div class="hero-chips">
-                <div class="h-chip"><span style="color:var(--green);">◈</span> Real-time inference</div>
-                <div class="h-chip"><span style="color:var(--blue);">◎</span> 80+ object classes</div>
-                <div class="h-chip"><span style="color:var(--red);">⬡</span> Human detection alert</div>
-                <div class="h-chip"><span style="color:var(--amber);">▦</span> Live session analytics</div>
-                <div class="h-chip"><span style="color:var(--cyan);">✋</span> Hand gesture detection</div>
-                <div class="h-chip"><span style="color:rgb(200,130,255);">☺</span> Face expression detection</div>
-                <div class="h-chip"><span style="color:rgb(200,200,100);">✦</span> Gesture particle effects</div>
-            </div>
-        </div>""", unsafe_allow_html=True)
-    else:
+    if is_live:
         run_detection(config, model)
+    else:
+        # ── Tab Navigation ──────────────────────────────
+        save_dir = config.get("save_folder", "./saved_frames")
+        saved_count = 0
+        if os.path.isdir(save_dir):
+            saved_count = len([f for f in os.listdir(save_dir) if f.lower().endswith((".jpg", ".jpeg", ".png"))])
+
+        tab_detect, tab_gallery = st.tabs([
+            f"◉ Detection",
+            f"⬛ Saved Frames" + (f" ({saved_count})" if saved_count else ""),
+        ])
+
+        # ── Detection Tab ───────────────────────────────
+        with tab_detect:
+            btn_c, _ = st.columns([1, 3])
+            with btn_c:
+                if st.button("► Start Detection", type="primary", key="start_btn"):
+                    st.session_state["running"] = True
+                    st.rerun()
+
+            st.markdown("""
+            <div class="hero-wrap">
+                <div class="hero-icon-ring">◎</div>
+                <div class="hero-heading">Ready to Detect</div>
+                <div class="hero-body">
+                    Configure your model and camera in the sidebar,
+                    then press <strong style="color:var(--green);">Start Detection</strong>
+                    to begin real-time inference.
+                </div>
+                <div class="hero-chips">
+                    <div class="h-chip"><span style="color:var(--green);">◈</span> Real-time inference</div>
+                    <div class="h-chip"><span style="color:var(--blue);">◎</span> 80+ object classes</div>
+                    <div class="h-chip"><span style="color:var(--red);">⬡</span> Human detection alert</div>
+                    <div class="h-chip"><span style="color:var(--amber);">▦</span> Live session analytics</div>
+                    <div class="h-chip"><span style="color:var(--cyan);">✋</span> Hand gesture detection</div>
+                    <div class="h-chip"><span style="color:rgb(200,130,255);">☺</span> Face expression detection</div>
+                    <div class="h-chip"><span style="color:rgb(200,200,100);">✦</span> Gesture particle effects</div>
+                </div>
+            </div>""", unsafe_allow_html=True)
+
+        # ── Saved Frames Tab ────────────────────────────
+        with tab_gallery:
+            if not os.path.isdir(save_dir) or saved_count == 0:
+                st.markdown("""
+                <div style="text-align:center;padding:60px 20px;">
+                    <div style="font-size:2.5rem;opacity:0.3;margin-bottom:12px;">⬛</div>
+                    <div style="font-size:0.95rem;font-weight:600;color:var(--text-secondary);margin-bottom:6px;">No Saved Frames Yet</div>
+                    <div style="font-size:0.78rem;color:var(--text-tertiary);max-width:340px;margin:0 auto;">
+                        Enable <strong>Save Frames</strong> in the sidebar and run detection to capture frames.
+                        They will appear here for preview and download.
+                    </div>
+                </div>""", unsafe_allow_html=True)
+            else:
+                frames = sorted(
+                    [f for f in os.listdir(save_dir) if f.lower().endswith((".jpg", ".jpeg", ".png"))],
+                    reverse=True,
+                )
+                st.markdown(f"""
+                <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px;">
+                    <span style="font-size:1.1rem;">⬛</span>
+                    <span style="font-size:0.85rem;font-weight:700;color:var(--text-primary);">Saved Frames</span>
+                    <span style="font-size:0.70rem;color:var(--text-tertiary);">{len(frames)} captured</span>
+                </div>""", unsafe_allow_html=True)
+
+                # Clear all button
+                clr_c1, clr_c2 = st.columns([1, 5])
+                with clr_c1:
+                    if st.button("Clear All", key="clear_frames"):
+                        for fname in frames:
+                            try:
+                                os.remove(os.path.join(save_dir, fname))
+                            except Exception:
+                                pass
+                        st.session_state["gallery_page"] = 1
+                        st.rerun()
+
+                # Pagination
+                per_page = 6
+                total_pages = max(1, (len(frames) + per_page - 1) // per_page)
+                if "gallery_page" not in st.session_state:
+                    st.session_state["gallery_page"] = 1
+                page = st.session_state["gallery_page"]
+                page = max(1, min(page, total_pages))
+                start = (page - 1) * per_page
+                page_frames = frames[start:start + per_page]
+
+                cols = st.columns(min(len(page_frames), 3))
+                for i, fname in enumerate(page_frames):
+                    with cols[i % 3]:
+                        fpath = os.path.join(save_dir, fname)
+                        img = Image.open(fpath)
+                        st.image(img, use_container_width=True)
+                        with open(fpath, "rb") as f:
+                            st.download_button(
+                                "▼ Download",
+                                data=f.read(),
+                                file_name=fname,
+                                mime="image/jpeg",
+                                key=f"dl_{fname}",
+                            )
+
+                # Pagination controls
+                nav_c1, nav_c2, nav_c3 = st.columns([1, 2, 1])
+                with nav_c1:
+                    if page > 1 and st.button("◄ Prev", key="gal_prev"):
+                        st.session_state["gallery_page"] = page - 1
+                        st.rerun()
+                with nav_c3:
+                    if page < total_pages and st.button("Next ►", key="gal_next"):
+                        st.session_state["gallery_page"] = page + 1
+                        st.rerun()
+                with nav_c2:
+                    st.markdown(
+                        f'<div style="text-align:center;font-size:0.75rem;color:var(--text-tertiary);">'
+                        f'Page {page} of {total_pages}</div>',
+                        unsafe_allow_html=True,
+                    )
 
 
 if __name__ == "__main__":
