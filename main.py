@@ -19,19 +19,10 @@ except Exception as e:
 try:
     import mediapipe as mp
     _MP_OK = True
-    _MP_ERROR = ""
 except Exception as e:
-    import sys
-    exc_type, exc_obj, exc_tb = sys.exc_info()
-    _MP_ERROR = (
-        f"Exception type: {exc_type.__name__ if exc_type else 'None'}\n"
-        f"Message: {str(e)}\n"
-        f"Args: {e.args}\n"
-        f"ModuleNotFoundError: {isinstance(e, ModuleNotFoundError)}\n"
-        f"Module path tried: {getattr(e, 'name', 'N/A')}"
-    )
     mp = None
     _MP_OK = False
+    _MP_ERROR = str(e)
 try:
     import pyttsx3
 except ImportError:
@@ -770,9 +761,8 @@ else:
     _mp_draw  = None
     _mp_style = None
 
+@st.cache_resource
 def _get_hand_detector(max_hands=2, min_conf=0.6):
-    if not _MP_OK or _mp_hands is None:
-        return None
     return _mp_hands.Hands(
         static_image_mode=False, max_num_hands=max_hands,
         min_detection_confidence=min_conf, min_tracking_confidence=min_conf,
@@ -867,9 +857,8 @@ else:
     _mp_face = None
     _FACE_CONTOURS = None
 
+@st.cache_resource
 def _get_face_detector(min_conf=0.5):
-    if not _MP_OK or _mp_face is None:
-        return None
     return _mp_face.FaceMesh(
         static_image_mode=False, max_num_faces=2,
         refine_landmarks=True, min_detection_confidence=min_conf,
@@ -1198,17 +1187,15 @@ def render_sidebar():
     hand_detect = st.sidebar.checkbox("Enable hand detection", value=False, disabled=not _MP_OK)
     hand_conf   = st.sidebar.slider("Hand confidence", 0.30, 1.0, 0.60, 0.05, disabled=not hand_detect)
     if not _MP_OK:
-        st.sidebar.caption("MediaPipe unavailable")
-        with st.sidebar.expander("Error details"):
-            st.code(_MP_ERROR, language="plaintext")
+        mp_err = _MP_ERROR if "_MP_ERROR" in globals() else "Import failed"
+        st.sidebar.caption(f"MediaPipe error: {mp_err}")
 
     st.sidebar.markdown('<div class="sb-heading" style="margin-top:16px;">☺ Face Expressions</div>', unsafe_allow_html=True)
     face_detect = st.sidebar.checkbox("Enable face detection", value=False, disabled=not _MP_OK)
     face_conf   = st.sidebar.slider("Face confidence", 0.30, 1.0, 0.50, 0.05, disabled=not face_detect)
     if not _MP_OK:
-        st.sidebar.caption("MediaPipe unavailable")
-        with st.sidebar.expander("Error details"):
-            st.code(_MP_ERROR, language="plaintext")
+        mp_err = _MP_ERROR if "_MP_ERROR" in globals() else "Import failed"
+        st.sidebar.caption(f"MediaPipe error: {mp_err}")
         st.sidebar.caption("Install mediapipe to enable")
 
     st.sidebar.markdown('<div class="sb-heading" style="margin-top:16px;">✦ Particle Effects</div>', unsafe_allow_html=True)
