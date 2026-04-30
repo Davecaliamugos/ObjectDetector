@@ -10,6 +10,12 @@ from ultralytics import YOLO
 from PIL import Image
 import torch
 try:
+    from streamlit_webrtc import webrtc_streamer, WebRtcMode
+    import av
+    _WEBRTC_OK = True
+except ImportError:
+    _WEBRTC_OK = False
+try:
     import mediapipe as mp
     _MP_OK = True
 except ImportError:
@@ -1160,7 +1166,8 @@ def render_sidebar():
     iou  = st.sidebar.slider("NMS IoU threshold", 0.10, 1.0, 0.45, 0.05)
 
     st.sidebar.markdown('<div class="sb-heading" style="margin-top:16px;">◎ Camera</div>', unsafe_allow_html=True)
-    cam_idx = st.sidebar.number_input("Device index", min_value=0, max_value=10, value=0)
+    cam_source = st.sidebar.radio("Source", ["Local Camera", "Browser Webcam"], index=1, horizontal=True, help="Browser Webcam works on hosted sites")
+    cam_idx = st.sidebar.number_input("Device index", min_value=0, max_value=10, value=0, disabled=(cam_source == "Browser Webcam"))
     res_map = {
         "640 × 480":  (640, 480),
         "800 × 600":  (800, 600),
@@ -1229,6 +1236,7 @@ def render_sidebar():
         "confidence":   conf,
         "iou":          iou,
         "camera_index": int(cam_idx),
+        "cam_source":   cam_source,
         "resolution":   resolution,
         "show_fps":     show_fps,
         "flip_camera":  flip,
@@ -1245,6 +1253,519 @@ def render_sidebar():
         "max_saved":     max_saved,
         "audio_alerts": audio_alerts,
     }
+
+
+# Module-level vars for WebRTC callback (session_state is NOT thread-safe in callbacks)
+_WEBRTC_MODEL = None
+_WEBRTC_CONF = 0.5
+_WEBRTC_IOU = 0.45
+_WEBRTC_FLIP = True
+_WEBRTC_SHOW_FPS = True
+_WEBRTC_MODEL_NAME = "yolov8n"
+_WEBRTC_SAVE = False
+_WEBRTC_SAVE_FOLDER = "./saved_frames"
+_WEBRTC_SAVE_INTERVAL = 10
+_WEBRTC_MAX_SAVED = 50
+_WEBRTC_FRAME_N = 0
+_WEBRTC_TOTAL_DETS = 0
+_WEBRTC_FPS = 0.0
+_WEBRTC_T0 = 0.0
+_WEBRTC_HAND_DETECT = False
+_WEBRTC_HAND_CONF = 0.6
+_WEBRTC_FACE_DETECT = False
+_WEBRTC_FACE_CONF = 0.5
+_WEBRTC_PARTICLE_FX = False
+_WEBRTC_PARTICLE_N = 200
+_WEBRTC_AUDIO_ALERTS = False
+_WEBRTC_DET_COUNTS = None
+_WEBRTC_HUMAN = False
+_WEBRTC_GESTURES = []
+_WEBRTC_FACES = []
+_WEBRTC_HAND_DETECTOR = None
+_WEBRTC_FACE_DETECTOR = None
+_WEBRTC_PSYS = None
+_WEBRTC_PREV_T = 0.0
+_WEBRTC_LAST_HUMAN_ALERT = 0.0
+_WEBRTC_LAST_GESTURE_ALERT = 0.0
+_WEBRTC_LAST_EXPRESSION_ALERT = 0.0
+
+
+def run_browser_detection(config, model):
+    """Browser webcam mode - real-time WebRTC detection with full features"""
+    global _WEBRTC_MODEL, _WEBRTC_CONF, _WEBRTC_IOU, _WEBRTC_FLIP, _WEBRTC_SHOW_FPS
+    global _WEBRTC_MODEL_NAME, _WEBRTC_SAVE, _WEBRTC_SAVE_FOLDER, _WEBRTC_SAVE_INTERVAL
+    global _WEBRTC_MAX_SAVED, _WEBRTC_FRAME_N, _WEBRTC_TOTAL_DETS, _WEBRTC_FPS, _WEBRTC_T0
+    global _WEBRTC_HAND_DETECT, _WEBRTC_HAND_CONF, _WEBRTC_FACE_DETECT, _WEBRTC_FACE_CONF
+    global _WEBRTC_PARTICLE_FX, _WEBRTC_PARTICLE_N, _WEBRTC_AUDIO_ALERTS
+    global _WEBRTC_DET_COUNTS, _WEBRTC_HUMAN, _WEBRTC_GESTURES, _WEBRTC_FACES
+    global _WEBRTC_HAND_DETECTOR, _WEBRTC_FACE_DETECTOR, _WEBRTC_PSYS, _WEBRTC_PREV_T
+    global _WEBRTC_LAST_HUMAN_ALERT, _WEBRTC_LAST_GESTURE_ALERT, _WEBRTC_LAST_EXPRESSION_ALERT
+
+    if not _WEBRTC_OK:
+        st.warning("Install `streamlit-webrtc` and `av` for browser webcam support.")
+        st.code("pip install streamlit-webrtc av", language="bash")
+        return
+
+    # Store config in module-level globals
+    _WEBRTC_MODEL = model
+    _WEBRTC_CONF = config["confidence"]
+    _WEBRTC_IOU = config["iou"]
+    _WEBRTC_FLIP = config["flip_camera"]
+    _WEBRTC_SHOW_FPS = config["show_fps"]
+    _WEBRTC_MODEL_NAME = config["model"].upper()
+    _WEBRTC_SAVE = config["save_frames"]
+    _WEBRTC_SAVE_FOLDER = config["save_folder"]
+    _WEBRTC_SAVE_INTERVAL = config["save_interval"]
+    _WEBRTC_MAX_SAVED = config["max_saved"]
+    _WEBRTC_FRAME_N = 0
+    _WEBRTC_TOTAL_DETS = 0
+    _WEBRTC_FPS = 0.0
+    _WEBRTC_T0 = time.perf_counter()
+    _WEBRTC_HAND_DETECT = config["hand_detect"] and _MP_OK
+    _WEBRTC_HAND_CONF = config["hand_conf"]
+    _WEBRTC_FACE_DETECT = config["face_detect"] and _MP_OK
+    _WEBRTC_FACE_CONF = config["face_conf"]
+    _WEBRTC_PARTICLE_FX = config["particle_fx"] and config["hand_detect"]
+    _WEBRTC_PARTICLE_N = config["particle_n"]
+    _WEBRTC_AUDIO_ALERTS = config["audio_alerts"]
+    _WEBRTC_DET_COUNTS = collections.Counter()
+    _WEBRTC_HUMAN = False
+    _WEBRTC_GESTURES = []
+    _WEBRTC_FACES = []
+    _WEBRTC_LAST_HUMAN_ALERT = 0.0
+    _WEBRTC_LAST_GESTURE_ALERT = 0.0
+    _WEBRTC_LAST_EXPRESSION_ALERT = 0.0
+
+    # Init hand/face detectors
+    if _WEBRTC_HAND_DETECT:
+        _WEBRTC_HAND_DETECTOR = _get_hand_detector(min_conf=_WEBRTC_HAND_CONF)
+    else:
+        _WEBRTC_HAND_DETECTOR = None
+    if _WEBRTC_FACE_DETECT:
+        _WEBRTC_FACE_DETECTOR = _get_face_detector(min_conf=_WEBRTC_FACE_CONF)
+    else:
+        _WEBRTC_FACE_DETECTOR = None
+    if _WEBRTC_PARTICLE_FX:
+        _WEBRTC_PSYS = ParticleSystem(max_particles=_WEBRTC_PARTICLE_N)
+    else:
+        _WEBRTC_PSYS = None
+    _WEBRTC_PREV_T = time.perf_counter()
+
+    # Init TTS
+    if _WEBRTC_AUDIO_ALERTS:
+        _init_tts()
+
+    # Create save folder
+    if _WEBRTC_SAVE:
+        os.makedirs(_WEBRTC_SAVE_FOLDER, exist_ok=True)
+
+    # Layout — same as local camera (no tabs during live)
+    col_feed, col_panel = st.columns([3, 1], gap="large")
+
+    with col_feed:
+        st.markdown("""
+        <div class="action-bar">
+            <div class="action-bar-left">
+                <div class="action-bar-title">Browser Webcam Feed</div>
+                <div class="action-bar-sub">Real-time inference via browser webcam</div>
+            </div>
+        </div>""", unsafe_allow_html=True)
+
+    with col_panel:
+        st.markdown('<div style="height:48px;"></div>', unsafe_allow_html=True)
+        fps_ph     = st.empty()
+        alert_ph   = st.empty()
+        detlist_ph = st.empty()
+        gesture_ph = st.empty()
+        expr_ph    = st.empty()
+        session_ph = st.empty()
+
+    def video_frame_callback(frame):
+        global _WEBRTC_FRAME_N, _WEBRTC_TOTAL_DETS, _WEBRTC_FPS
+        global _WEBRTC_DET_COUNTS, _WEBRTC_HUMAN, _WEBRTC_GESTURES, _WEBRTC_FACES
+        global _WEBRTC_PREV_T, _WEBRTC_LAST_HUMAN_ALERT, _WEBRTC_LAST_GESTURE_ALERT
+        global _WEBRTC_LAST_EXPRESSION_ALERT
+
+        img = frame.to_ndarray(format="bgr24")
+
+        # Flip if mirror enabled
+        if _WEBRTC_FLIP:
+            img = cv2.flip(img, 1)
+
+        img = to_cpu_mat(img)
+
+        # ── Object detection ─────────────────────────────
+        try:
+            ann, dets, det_counts, human = detect_objects(
+                img, _WEBRTC_MODEL, _WEBRTC_CONF, _WEBRTC_IOU)
+        except Exception:
+            ann = img
+            dets = []
+            det_counts = collections.Counter()
+            human = False
+
+        _WEBRTC_DET_COUNTS = det_counts
+        _WEBRTC_HUMAN = human
+
+        # ── Hand detection ───────────────────────────────
+        HAND_SKIP = 3
+        if _WEBRTC_HAND_DETECTOR is not None and _WEBRTC_FRAME_N % HAND_SKIP == 0:
+            try:
+                small = cv2.resize(img, (0, 0), fx=0.5, fy=0.5)
+                _WEBRTC_GESTURES = detect_hands(small, _WEBRTC_HAND_DETECTOR)
+            except Exception:
+                _WEBRTC_GESTURES = []
+        gestures = _WEBRTC_GESTURES if _WEBRTC_HAND_DETECTOR is not None else []
+        if gestures:
+            ann = draw_hands(ann, gestures)
+
+        # ── Face detection ───────────────────────────────
+        FACE_SKIP = 4
+        if _WEBRTC_FACE_DETECTOR is not None and _WEBRTC_FRAME_N % FACE_SKIP == 0:
+            try:
+                small = cv2.resize(img, (0, 0), fx=0.5, fy=0.5)
+                _WEBRTC_FACES = detect_faces(small, _WEBRTC_FACE_DETECTOR)
+            except Exception:
+                _WEBRTC_FACES = []
+        faces = _WEBRTC_FACES if _WEBRTC_FACE_DETECTOR is not None else []
+        if faces:
+            ann = draw_faces(ann, faces)
+
+        # ── Particle effects ─────────────────────────────
+        if _WEBRTC_PSYS is not None:
+            now_t = time.perf_counter()
+            dt = min(now_t - _WEBRTC_PREV_T, 0.1)
+            _WEBRTC_PREV_T = now_t
+            fh, fw = ann.shape[:2]
+            if gestures:
+                g = gestures[0]
+                lm = g["landmarks"].landmark
+                pcx, pcy = _palm_center(lm, fw, fh)
+                gest = g["gesture"]
+                dx, dy = None, None
+                if gest in ("Pointing", "Peace"):
+                    dx, dy = _pointing_dir(lm, fw, fh)
+                _spawn_for_gesture(_WEBRTC_PSYS, gest, pcx, pcy, dx, dy)
+                _WEBRTC_PSYS.update(dt, gest, pcx, pcy, dx, dy, fw, fh)
+            else:
+                _WEBRTC_PSYS.update(dt, fw=fw, fh=fh)
+            ann = _WEBRTC_PSYS.render(ann)
+
+        # ── Audio alerts ────────────────────────────────
+        if _WEBRTC_AUDIO_ALERTS:
+            now = time.perf_counter()
+            ALERT_COOLDOWN = 3.0
+            if human and now - _WEBRTC_LAST_HUMAN_ALERT > ALERT_COOLDOWN:
+                _speak("Human detected")
+                _WEBRTC_LAST_HUMAN_ALERT = now
+            if gestures:
+                gest = gestures[0]["gesture"]
+                if now - _WEBRTC_LAST_GESTURE_ALERT > ALERT_COOLDOWN:
+                    _speak(f"{gest} detected")
+                    _WEBRTC_LAST_GESTURE_ALERT = now
+            if faces:
+                expr = faces[0]["expression"]
+                if now - _WEBRTC_LAST_EXPRESSION_ALERT > ALERT_COOLDOWN:
+                    _speak(f"{expr} expression detected")
+                    _WEBRTC_LAST_EXPRESSION_ALERT = now
+
+        # ── Save frame ──────────────────────────────────
+        _WEBRTC_FRAME_N += 1
+        _WEBRTC_TOTAL_DETS += len(dets)
+        if _WEBRTC_SAVE and len(dets) > 0 and _WEBRTC_FRAME_N % _WEBRTC_SAVE_INTERVAL == 0:
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            filename = os.path.join(_WEBRTC_SAVE_FOLDER, f"frame_{timestamp}_{_WEBRTC_FRAME_N}.jpg")
+            cv2.imwrite(filename, to_cpu_mat(ann))
+            try:
+                existing = sorted([f for f in os.listdir(_WEBRTC_SAVE_FOLDER) if f.lower().endswith((".jpg", ".jpeg", ".png"))])
+                while len(existing) > _WEBRTC_MAX_SAVED:
+                    os.remove(os.path.join(_WEBRTC_SAVE_FOLDER, existing.pop(0)))
+            except Exception:
+                pass
+
+        # ── FPS overlay ──────────────────────────────────
+        now = time.perf_counter()
+        elapsed = now - _WEBRTC_T0
+        _WEBRTC_FPS = _WEBRTC_FRAME_N / max(elapsed, 0.001)
+
+        if _WEBRTC_SHOW_FPS:
+            cv2.putText(ann, f"FPS  {_WEBRTC_FPS:.1f}",
+                (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.65,
+                (0, 212, 126), 2, cv2.LINE_AA)
+            cv2.putText(ann, _WEBRTC_MODEL_NAME,
+                (12, 48), cv2.FONT_HERSHEY_SIMPLEX, 0.36,
+                (140, 150, 165), 1, cv2.LINE_AA)
+
+        ts = time.strftime("%H:%M:%S")
+        fw_px = ann.shape[1]
+        (tsw, _), _ = cv2.getTextSize(ts, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
+        cv2.putText(ann, ts, (fw_px - tsw - 10, 22),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (120, 120, 145), 1, cv2.LINE_AA)
+
+        if _WEBRTC_SHOW_FPS:
+            y_off = 68
+            if gestures:
+                cv2.putText(ann, f"Hands {len(gestures)}",
+                    (12, y_off), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.36, (34, 211, 238), 1, cv2.LINE_AA)
+                y_off += 20
+            if faces:
+                cv2.putText(ann, f"Faces {len(faces)}",
+                    (12, y_off), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.36, (200, 130, 255), 1, cv2.LINE_AA)
+                y_off += 20
+            if _WEBRTC_PSYS is not None and _WEBRTC_PSYS.count > 0:
+                cv2.putText(ann, f"Particles {_WEBRTC_PSYS.count}",
+                    (12, y_off), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.36, (200, 200, 100), 1, cv2.LINE_AA)
+
+        return av.VideoFrame.from_ndarray(to_cpu_mat(ann), format="bgr24")
+
+    # ── Side panel display (auto-refresh) ───────────────
+    def _render_panel():
+        fps_ph.markdown(f"""
+        <div class="sp">
+            <div class="sp-head">
+                <div class="sp-icon green">◈</div>
+                <span class="sp-title">Performance</span>
+            </div>
+            <div class="fps-big">
+                <span class="fps-num">{_WEBRTC_FPS:.1f}</span>
+                <span class="fps-unit">fps</span>
+            </div>
+            <div class="fps-sub">Frame #{_WEBRTC_FRAME_N:,}</div>
+        </div>""", unsafe_allow_html=True)
+
+        if _WEBRTC_HUMAN:
+            alert_ph.markdown("""
+            <div class="alert-live">
+                <div class="adot"></div>
+                <span class="atxt">Human Detected</span>
+            </div>""", unsafe_allow_html=True)
+        else:
+            alert_ph.markdown("""
+            <div class="alert-clear">
+                <div class="adot"></div>
+                <span class="atxt">Scene Clear</span>
+            </div>""", unsafe_allow_html=True)
+
+        det_counts = _WEBRTC_DET_COUNTS or collections.Counter()
+        if det_counts:
+            rows_html = ""
+            for cls, cnt in det_counts.most_common(8):
+                mk = "person" if cls == "person" else "obj"
+                rows_html += f"""
+                <div class="det-row">
+                    <div class="det-left">
+                        <div class="det-marker {mk}"></div>
+                        <span class="det-label">{cls}</span>
+                    </div>
+                    <span class="det-badge">{cnt}</span>
+                </div>"""
+            detlist_ph.markdown(f"""
+            <div class="sp">
+                <div class="sp-head">
+                    <div class="sp-icon blue">◎</div>
+                    <span class="sp-title">Detections</span>
+                </div>{rows_html}
+            </div>""", unsafe_allow_html=True)
+        else:
+            detlist_ph.markdown("""
+            <div class="sp">
+                <div class="sp-head">
+                    <div class="sp-icon blue">◎</div>
+                    <span class="sp-title">Detections</span>
+                </div>
+                <div class="det-empty">
+                    <span class="det-icon">◉</span>
+                    <span>Scanning scene…</span>
+                </div>
+            </div>""", unsafe_allow_html=True)
+
+        if _WEBRTC_HAND_DETECT:
+            gestures = _WEBRTC_GESTURES
+            if gestures:
+                gesture_rows = ""
+                for g in gestures:
+                    gesture_rows += f"""
+                    <div class="det-row">
+                        <div class="det-left">
+                            <div class="det-marker" style="background:var(--cyan);"></div>
+                            <span class="det-label">{g['gesture']}</span>
+                        </div>
+                        <span class="det-badge" style="background:var(--cyan-dim);color:var(--cyan);">{g['handedness']}</span>
+                    </div>"""
+                gesture_ph.markdown(f"""
+                <div class="sp">
+                    <div class="sp-head">
+                        <div class="sp-icon" style="background:var(--cyan-dim);color:var(--cyan);">✋</div>
+                        <span class="sp-title">Hand Gestures</span>
+                    </div>{gesture_rows}
+                </div>""", unsafe_allow_html=True)
+            else:
+                gesture_ph.markdown("""
+                <div class="sp">
+                    <div class="sp-head">
+                        <div class="sp-icon" style="background:var(--cyan-dim);color:var(--cyan);">✋</div>
+                        <span class="sp-title">Hand Gestures</span>
+                    </div>
+                    <div class="det-empty">
+                        <span class="det-icon">✋</span>
+                        <span>No hands detected</span>
+                    </div>
+                </div>""", unsafe_allow_html=True)
+
+        if _WEBRTC_FACE_DETECT:
+            faces = _WEBRTC_FACES
+            if faces:
+                expr_rows = ""
+                for f in faces:
+                    expr_rows += f"""
+                    <div class="det-row">
+                        <div class="det-left">
+                            <div class="det-marker" style="background:rgb(200,130,255);"></div>
+                            <span class="det-label">{f['expression']}</span>
+                        </div>
+                    </div>"""
+                expr_ph.markdown(f"""
+                <div class="sp">
+                    <div class="sp-head">
+                        <div class="sp-icon" style="background:rgba(200,130,255,0.10);color:rgb(200,130,255);">☺</div>
+                        <span class="sp-title">Expressions</span>
+                    </div>{expr_rows}
+                </div>""", unsafe_allow_html=True)
+            else:
+                expr_ph.markdown("""
+                <div class="sp">
+                    <div class="sp-head">
+                        <div class="sp-icon" style="background:rgba(200,130,255,0.10);color:rgb(200,130,255);">☺</div>
+                        <span class="sp-title">Expressions</span>
+                    </div>
+                    <div class="det-empty">
+                        <span class="det-icon">☺</span>
+                        <span>No faces detected</span>
+                    </div>
+                </div>""", unsafe_allow_html=True)
+
+        elapsed = time.perf_counter() - _WEBRTC_T0
+        m, s = divmod(int(elapsed), 60)
+        avg = _WEBRTC_TOTAL_DETS / max(_WEBRTC_FRAME_N, 1)
+        session_ph.markdown(f"""
+        <div class="sp">
+            <div class="sp-head">
+                <div class="sp-icon violet">▦</div>
+                <span class="sp-title">Session</span>
+            </div>
+            <div class="srow">
+                <span class="srow-label">Total detections</span>
+                <span class="srow-value">{_WEBRTC_TOTAL_DETS:,}</span>
+            </div>
+            <div class="srow">
+                <span class="srow-label">Runtime</span>
+                <span class="srow-value">{m:02d}:{s:02d}</span>
+            </div>
+            <div class="srow">
+                <span class="srow-label">Unique classes</span>
+                <span class="srow-value">{len(det_counts)}</span>
+            </div>
+            <div class="srow">
+                <span class="srow-label">Avg / frame</span>
+                <span class="srow-value">{avg:.1f}</span>
+            </div>
+        </div>""", unsafe_allow_html=True)
+
+    _render_panel()
+
+    with col_feed:
+        webrtc_streamer(
+            key="object-detection",
+            video_frame_callback=video_frame_callback,
+            async_processing=True,
+            rtc_configuration={
+                "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
+            },
+            media_stream_constraints={
+                "video": {
+                    "width": {"ideal": 1280, "max": 1920},
+                    "height": {"ideal": 720, "max": 1080},
+                    "frameRate": {"ideal": 30, "max": 60},
+                },
+                "audio": False,
+            },
+            desired_playing_state=True,
+        )
+
+    # ── Saved Frames (below feed, same as local camera) ──
+    save_dir = config.get("save_folder", "./saved_frames")
+    saved_count = 0
+    if os.path.isdir(save_dir):
+        saved_count = len([f for f in os.listdir(save_dir) if f.lower().endswith((".jpg", ".jpeg", ".png"))])
+
+    if saved_count > 0:
+        st.markdown('<hr class="hdivider"/>', unsafe_allow_html=True)
+        frames = sorted(
+            [f for f in os.listdir(save_dir) if f.lower().endswith((".jpg", ".jpeg", ".png"))],
+            reverse=True,
+        )
+        st.markdown(f"""
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px;">
+            <span style="font-size:1.1rem;">⬛</span>
+            <span style="font-size:0.85rem;font-weight:700;color:var(--text-primary);">Saved Frames</span>
+            <span style="font-size:0.70rem;color:var(--text-tertiary);">{len(frames)} captured</span>
+        </div>""", unsafe_allow_html=True)
+
+        # Clear all button
+        clr_c1, clr_c2 = st.columns([1, 5])
+        with clr_c1:
+            if st.button("Clear All", key="clear_frames_webrtc"):
+                for fname in frames:
+                    try:
+                        os.remove(os.path.join(save_dir, fname))
+                    except Exception:
+                        pass
+                st.session_state["gallery_page"] = 1
+                st.rerun()
+
+        # Pagination
+        per_page = 6
+        total_pages = max(1, (len(frames) + per_page - 1) // per_page)
+        if "gallery_page" not in st.session_state:
+            st.session_state["gallery_page"] = 1
+        page = st.session_state["gallery_page"]
+        page = max(1, min(page, total_pages))
+        start = (page - 1) * per_page
+        end = start + per_page
+
+        cols = st.columns(min(len(frames[start:end]), 3))
+        for i, fname in enumerate(frames[start:end]):
+            with cols[i % 3]:
+                fpath = os.path.join(save_dir, fname)
+                img = Image.open(fpath)
+                st.image(img, use_container_width=True)
+                with open(fpath, "rb") as f:
+                    st.download_button(
+                        "▼ Download",
+                        data=f.read(),
+                        file_name=fname,
+                        mime="image/jpeg",
+                        key=f"dl_w_{fname}",
+                    )
+
+        # Page navigation
+        nav_c1, nav_c2, nav_c3 = st.columns([1, 2, 1])
+        with nav_c2:
+            st.markdown(
+                f'<div style="text-align:center;font-size:0.75rem;color:var(--text-tertiary);">'
+                f'Page {page} of {total_pages}</div>',
+                unsafe_allow_html=True)
+        with nav_c1:
+            if page > 1 and st.button("◄ Prev", key="gal_prev_w"):
+                st.session_state["gallery_page"] = page - 1
+                st.rerun()
+        with nav_c3:
+            if page < total_pages and st.button("Next ►", key="gal_next_w"):
+                st.session_state["gallery_page"] = page + 1
+                st.rerun()
 
 
 def run_detection(config, model):
@@ -1720,7 +2241,10 @@ def main():
     st.markdown('<hr class="hdivider"/>', unsafe_allow_html=True)
 
     if is_live:
-        run_detection(config, model)
+        if config["cam_source"] == "Browser Webcam":
+            run_browser_detection(config, model)
+        else:
+            run_detection(config, model)
     else:
         # ── Tab Navigation ──────────────────────────────
         save_dir = config.get("save_folder", "./saved_frames")
