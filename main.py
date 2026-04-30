@@ -9,7 +9,12 @@ import threading
 from ultralytics import YOLO
 from PIL import Image
 import torch
-import mediapipe as mp
+try:
+    import mediapipe as mp
+    _MP_OK = True
+except ImportError:
+    mp = None
+    _MP_OK = False
 try:
     import pyttsx3
 except ImportError:
@@ -733,9 +738,9 @@ class FPSCounter:
 
 
 
-_mp_hands = mp.solutions.hands
-_mp_draw  = mp.solutions.drawing_utils
-_mp_style = mp.solutions.drawing_styles
+_mp_hands = mp.solutions.hands if _MP_OK else None
+_mp_draw  = mp.solutions.drawing_utils if _MP_OK else None
+_mp_style = mp.solutions.drawing_styles if _MP_OK else None
 
 @st.cache_resource
 def _get_hand_detector(max_hands=2, min_conf=0.6):
@@ -810,8 +815,8 @@ def draw_hands(frame, gestures):
     return frame
 
 
-_mp_face = mp.solutions.face_mesh
-_FACE_CONTOURS = _mp_face.FACEMESH_CONTOURS
+_mp_face = mp.solutions.face_mesh if _MP_OK else None
+_FACE_CONTOURS = _mp_face.FACEMESH_CONTOURS if _MP_OK else None
 
 @st.cache_resource
 def _get_face_detector(min_conf=0.5):
@@ -1139,12 +1144,16 @@ def render_sidebar():
     max_fps  = st.sidebar.slider("Frame-rate cap", 5, 60, 30)
 
     st.sidebar.markdown('<div class="sb-heading" style="margin-top:16px;">✋ Hand Gestures</div>', unsafe_allow_html=True)
-    hand_detect = st.sidebar.checkbox("Enable hand detection", value=False)
+    hand_detect = st.sidebar.checkbox("Enable hand detection", value=False, disabled=not _MP_OK)
     hand_conf   = st.sidebar.slider("Hand confidence", 0.30, 1.0, 0.60, 0.05, disabled=not hand_detect)
+    if not _MP_OK:
+        st.sidebar.caption("Install mediapipe to enable")
 
     st.sidebar.markdown('<div class="sb-heading" style="margin-top:16px;">☺ Face Expressions</div>', unsafe_allow_html=True)
-    face_detect = st.sidebar.checkbox("Enable face detection", value=False)
+    face_detect = st.sidebar.checkbox("Enable face detection", value=False, disabled=not _MP_OK)
     face_conf   = st.sidebar.slider("Face confidence", 0.30, 1.0, 0.50, 0.05, disabled=not face_detect)
+    if not _MP_OK:
+        st.sidebar.caption("Install mediapipe to enable")
 
     st.sidebar.markdown('<div class="sb-heading" style="margin-top:16px;">✦ Particle Effects</div>', unsafe_allow_html=True)
     particle_fx = st.sidebar.checkbox("Enable particle effects", value=False)
