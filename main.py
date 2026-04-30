@@ -23,7 +23,7 @@ try:
 except Exception as e:
     mp = None
     _MP_OK = False
-    _MP_ERROR = str(e)
+    _MP_ERROR = f"{type(e).__name__}: {e}"
 try:
     import pyttsx3
 except ImportError:
