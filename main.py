@@ -13,8 +13,9 @@ try:
     from streamlit_webrtc import webrtc_streamer, WebRtcMode
     import av
     _WEBRTC_OK = True
-except ImportError:
+except Exception as e:
     _WEBRTC_OK = False
+    _WEBRTC_ERROR = str(e)
 try:
     import mediapipe as mp
     _MP_OK = True
@@ -1302,7 +1303,8 @@ def run_browser_detection(config, model):
     global _WEBRTC_LAST_HUMAN_ALERT, _WEBRTC_LAST_GESTURE_ALERT, _WEBRTC_LAST_EXPRESSION_ALERT
 
     if not _WEBRTC_OK:
-        st.warning("Install `streamlit-webrtc` and `av` for browser webcam support.")
+        error_msg = _WEBRTC_ERROR if "_WEBRTC_ERROR" in globals() else "Import failed"
+        st.error(f"Browser webcam not available: {error_msg}")
         st.code("pip install streamlit-webrtc av", language="bash")
         return
 
