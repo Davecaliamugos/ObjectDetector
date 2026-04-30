@@ -19,9 +19,10 @@ except Exception as e:
 try:
     import mediapipe as mp
     _MP_OK = True
-except ImportError:
+except Exception as e:
     mp = None
     _MP_OK = False
+    _MP_ERROR = str(e)
 try:
     import pyttsx3
 except ImportError:
@@ -1327,6 +1328,14 @@ def run_browser_detection(config, model):
     _WEBRTC_HAND_CONF = config["hand_conf"]
     _WEBRTC_FACE_DETECT = config["face_detect"] and _MP_OK
     _WEBRTC_FACE_CONF = config["face_conf"]
+
+    # Warn if mediapipe not available but features enabled
+    if config["hand_detect"] and not _MP_OK:
+        mp_error = _MP_ERROR if "_MP_ERROR" in globals() else "Import failed"
+        st.warning(f"Hand detection disabled: MediaPipe not available ({mp_error})")
+    if config["face_detect"] and not _MP_OK:
+        mp_error = _MP_ERROR if "_MP_ERROR" in globals() else "Import failed"
+        st.warning(f"Face detection disabled: MediaPipe not available ({mp_error})")
     _WEBRTC_PARTICLE_FX = config["particle_fx"] and config["hand_detect"]
     _WEBRTC_PARTICLE_N = config["particle_n"]
     _WEBRTC_AUDIO_ALERTS = config["audio_alerts"]
