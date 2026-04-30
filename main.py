@@ -10,7 +10,10 @@ from ultralytics import YOLO
 from PIL import Image
 import torch
 import mediapipe as mp
-import pyttsx3
+try:
+    import pyttsx3
+except ImportError:
+    pyttsx3 = None
 
 cv2.ocl.setUseOpenCL(False)
 
