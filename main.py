@@ -770,8 +770,9 @@ else:
     _mp_draw  = None
     _mp_style = None
 
-@st.cache_resource
 def _get_hand_detector(max_hands=2, min_conf=0.6):
+    if not _MP_OK or _mp_hands is None:
+        return None
     return _mp_hands.Hands(
         static_image_mode=False, max_num_hands=max_hands,
         min_detection_confidence=min_conf, min_tracking_confidence=min_conf,
@@ -866,8 +867,9 @@ else:
     _mp_face = None
     _FACE_CONTOURS = None
 
-@st.cache_resource
 def _get_face_detector(min_conf=0.5):
+    if not _MP_OK or _mp_face is None:
+        return None
     return _mp_face.FaceMesh(
         static_image_mode=False, max_num_faces=2,
         refine_landmarks=True, min_detection_confidence=min_conf,
