@@ -21,12 +21,15 @@ try:
     _MP_OK = True
     _MP_ERROR = ""
 except Exception as e:
-    import traceback, io, sys
-    buf = io.StringIO()
-    traceback.print_exc(file=buf)
-    _MP_ERROR = buf.getvalue()
-    if not _MP_ERROR:
-        _MP_ERROR = f"No traceback. Type: {type(e).__name__}, Args: {e.args}, ExcInfo: {sys.exc_info()[0]}"
+    import sys
+    exc_type, exc_obj, exc_tb = sys.exc_info()
+    _MP_ERROR = (
+        f"Exception type: {exc_type.__name__ if exc_type else 'None'}\n"
+        f"Message: {str(e)}\n"
+        f"Args: {e.args}\n"
+        f"ModuleNotFoundError: {isinstance(e, ModuleNotFoundError)}\n"
+        f"Module path tried: {getattr(e, 'name', 'N/A')}"
+    )
     mp = None
     _MP_OK = False
 try:
