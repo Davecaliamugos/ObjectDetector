@@ -739,9 +739,15 @@ class FPSCounter:
 
 
 if _MP_OK:
-    _mp_hands = mp.solutions.hands
-    _mp_draw  = mp.solutions.drawing_utils
-    _mp_style = mp.solutions.drawing_styles
+    try:
+        _mp_hands = mp.solutions.hands
+        _mp_draw  = mp.solutions.drawing_utils
+        _mp_style = mp.solutions.drawing_styles
+    except AttributeError:
+        _MP_OK = False
+        _mp_hands = None
+        _mp_draw  = None
+        _mp_style = None
 else:
     _mp_hands = None
     _mp_draw  = None
@@ -821,8 +827,13 @@ def draw_hands(frame, gestures):
 
 
 if _MP_OK:
-    _mp_face = mp.solutions.face_mesh
-    _FACE_CONTOURS = _mp_face.FACEMESH_CONTOURS
+    try:
+        _mp_face = mp.solutions.face_mesh
+        _FACE_CONTOURS = _mp_face.FACEMESH_CONTOURS
+    except AttributeError:
+        _MP_OK = False
+        _mp_face = None
+        _FACE_CONTOURS = None
 else:
     _mp_face = None
     _FACE_CONTOURS = None
