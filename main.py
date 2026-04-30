@@ -795,9 +795,20 @@ def classify_gesture(lm, handedness) -> str:
     if not thumb and index and middle and ring and pinky: return "Four"
     return f"{count} Fingers"
 
-_HAND_CONNECTIONS = _mp_hands.HAND_CONNECTIONS
-_HAND_LANDMARK_STYLE = _mp_style.get_default_hand_landmarks_style()
-_HAND_CONN_STYLE = _mp_style.get_default_hand_connections_style()
+if _MP_OK:
+    try:
+        _HAND_CONNECTIONS = _mp_hands.HAND_CONNECTIONS
+        _HAND_LANDMARK_STYLE = _mp_style.get_default_hand_landmarks_style()
+        _HAND_CONN_STYLE = _mp_style.get_default_hand_connections_style()
+    except AttributeError:
+        _MP_OK = False
+        _HAND_CONNECTIONS = None
+        _HAND_LANDMARK_STYLE = None
+        _HAND_CONN_STYLE = None
+else:
+    _HAND_CONNECTIONS = None
+    _HAND_LANDMARK_STYLE = None
+    _HAND_CONN_STYLE = None
 
 def detect_hands(frame, hand_detector):
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
