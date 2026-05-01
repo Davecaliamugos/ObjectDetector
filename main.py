@@ -6,6 +6,7 @@ import time
 import collections
 import os
 import threading
+import uuid
 from ultralytics import YOLO
 from PIL import Image
 import torch
@@ -765,6 +766,15 @@ def _resize_for_processing(frame: np.ndarray, scale: float):
     return resized, s
 
 
+def _get_session_save_dir(base_dir: str):
+    base = base_dir or "./saved_frames"
+    sid = st.session_state.get("_save_session_id")
+    if not sid:
+        sid = uuid.uuid4().hex[:10]
+        st.session_state["_save_session_id"] = sid
+    return os.path.join(base, sid)
+
+
 def frame_to_pil(frame):
     frame = to_cpu_mat(frame)
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -794,6 +804,7 @@ if _MP_OK:
         _mp_style = mp.solutions.drawing_styles
     except AttributeError:
         _MP_OK = False
+        _MP_ERROR = "MediaPipe loaded but `mp.solutions.hands` is unavailable in this runtime."
         _mp_hands = None
         _mp_draw  = None
         _mp_style = None
@@ -851,6 +862,7 @@ if _MP_OK:
         _HAND_CONN_STYLE = _mp_style.get_default_hand_connections_style()
     except AttributeError:
         _MP_OK = False
+        _MP_ERROR = "MediaPipe Hands API attributes are unavailable in this runtime."
         _HAND_CONNECTIONS = None
         _HAND_LANDMARK_STYLE = None
         _HAND_CONN_STYLE = None
@@ -892,6 +904,7 @@ if _MP_OK:
         _FACE_CONTOURS = _mp_face.FACEMESH_CONTOURS
     except AttributeError:
         _MP_OK = False
+        _MP_ERROR = "MediaPipe Face Mesh API attributes are unavailable in this runtime."
         _mp_face = None
         _FACE_CONTOURS = None
 else:
@@ -1522,7 +1535,7 @@ def run_browser_detection(config, model):
         <div class="action-bar">
             <div class="action-bar-left">
                 <div class="action-bar-title">Live Detection Feed</div>
-                <div class="action-bar-sub">Browser webcam inference — same layout as local camera mode</div>
+                <div class="action-bar-sub">Browser webcam inference </div>
             </div>
         </div>""", unsafe_allow_html=True)
 
@@ -2468,6 +2481,8 @@ def main():
         st.session_state["running"] = False
 
     config = render_sidebar()
+    session_save_dir = _get_session_save_dir(config.get("save_folder", "./saved_frames"))
+    config["save_folder"] = session_save_dir
 
     loader_ph = st.empty()
     with loader_ph.container():
