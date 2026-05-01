@@ -589,6 +589,23 @@ header {
     display: flex; justify-content: flex-end;
     margin-top: 12px;
 }
+
+/* Browser webcam component shell (streamlit-webrtc) */
+div[data-testid="stElementContainer"]:has(iframe[title*="streamlit_webrtc"]),
+div[data-testid="stElementContainer"]:has(iframe[src*="streamlit_webrtc"]) {
+    background: var(--bg-card) !important;
+    border: 1px solid var(--border-subtle) !important;
+    border-radius: var(--r-lg) !important;
+    padding: 10px !important;
+    overflow: hidden !important;
+}
+iframe[title*="streamlit_webrtc"],
+iframe[src*="streamlit_webrtc"] {
+    width: 100% !important;
+    border: 0 !important;
+    border-radius: 12px !important;
+    background: #0f0f18 !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -722,6 +739,30 @@ def draw_detections(frame, detections, human_detected=False):
             (71, 68, 239), 1, cv2.LINE_AA)
     return frame
 
+
+def _scene_signature_from_counts(det_counts: collections.Counter) -> str:
+    if not det_counts:
+        return ""
+    parts = [f"{cls}:{cnt}" for cls, cnt in sorted(det_counts.items(), key=lambda x: x[0])]
+    return "|".join(parts)
+
+
+def _allow_scene_save(scene_sig: str, last_sig: str, streak: int, max_repeats: int):
+    max_repeats = max(1, int(max_repeats))
+    if scene_sig == last_sig:
+        streak += 1
+    else:
+        last_sig = scene_sig
+        streak = 1
+    return streak <= max_repeats, last_sig, streak
+
+
+def _resize_for_processing(frame: np.ndarray, scale: float):
+    s = float(max(0.3, min(1.0, scale)))
+    if s >= 0.999:
+        return frame, 1.0
+    resized = cv2.resize(frame, (0, 0), fx=s, fy=s, interpolation=cv2.INTER_AREA)
+    return resized, s
 
 
 def frame_to_pil(frame):
@@ -1120,6 +1161,15 @@ def _render_image(placeholder, img, caption=""):
 import subprocess
 import platform
 
+def _is_hosted_runtime() -> bool:
+    # Heuristic: Streamlit Cloud and similar hosted runtimes usually expose one of these.
+    return any([
+        bool(os.getenv("STREAMLIT_SHARING_MODE")),
+        bool(os.getenv("STREAMLIT_RUNTIME")),
+        bool(os.getenv("STREAMLIT_CLOUD")),
+        bool(os.getenv("IS_STREAMLIT_CLOUD")),
+    ])
+
 def _init_tts():
     pass
 
@@ -1168,20 +1218,49 @@ def render_sidebar():
     iou  = st.sidebar.slider("NMS IoU threshold", 0.10, 1.0, 0.45, 0.05)
 
     st.sidebar.markdown('<div class="sb-heading" style="margin-top:16px;">◎ Camera</div>', unsafe_allow_html=True)
-    cam_source = st.sidebar.radio("Source", ["Local Camera", "Browser Webcam"], index=1, horizontal=True, help="Browser Webcam works on hosted sites")
-    cam_idx = st.sidebar.number_input("Device index", min_value=0, max_value=10, value=0, disabled=(cam_source == "Browser Webcam"))
+    hosted = _is_hosted_runtime()
+    if hosted:
+        cam_source = "Browser Webcam"
+        st.sidebar.radio(
+            "Source",
+            ["Browser Webcam"],
+            index=0,
+            horizontal=True,
+            help="Hosted deployments use browser camera access.",
+            disabled=True,
+        )
+        st.sidebar.caption("`Local Camera` is available only when running Streamlit on your own machine.")
+    else:
+        cam_source = st.sidebar.radio(
+            "Source",
+            ["Local Camera", "Browser Webcam"],
+            index=1,
+            horizontal=True,
+            help="Browser Webcam works on hosted sites",
+        )
+    cam_idx = st.sidebar.number_input(
+        "Device index",
+        min_value=0,
+        max_value=10,
+        value=0,
+        disabled=(cam_source == "Browser Webcam"),
+    )
     res_map = {
         "640 × 480":  (640, 480),
         "800 × 600":  (800, 600),
         "1280 × 720": (1280, 720),
     }
-    res_lbl    = st.sidebar.selectbox("Resolution", list(res_map.keys()), index=0)
+    res_lbl    = st.sidebar.selectbox("Resolution", list(res_map.keys()), index=2)
     resolution = res_map[res_lbl]
 
     st.sidebar.markdown('<div class="sb-heading" style="margin-top:16px;">⚙ Display</div>', unsafe_allow_html=True)
     show_fps = st.sidebar.checkbox("FPS overlay", value=True)
-    flip     = st.sidebar.checkbox("Mirror camera", value=True)
-    max_fps  = st.sidebar.slider("Frame-rate cap", 5, 60, 30)
+    flip     = st.sidebar.checkbox("Mirror camera", value=False, help="Enable only if you want a selfie-style mirrored preview")
+    max_fps  = st.sidebar.slider("Frame-rate cap", 5, 60, 24, help="Lower FPS usually improves stability and image quality in browser webcam mode")
+    prod_opt = st.sidebar.checkbox("Production optimize", value=True, help="Balances quality and latency for real-time use")
+    proc_scale = st.sidebar.slider("Processing scale", 0.40, 1.00, 0.70, 0.05, help="Lower values are faster but less detailed")
+    if not prod_opt:
+        proc_scale = 1.0
 
     st.sidebar.markdown('<div class="sb-heading" style="margin-top:16px;">✋ Hand Gestures</div>', unsafe_allow_html=True)
     hand_detect = st.sidebar.checkbox("Enable hand detection", value=False, disabled=not _MP_OK)
@@ -1207,6 +1286,7 @@ def render_sidebar():
     save_folder = st.sidebar.text_input("Save folder path", value="./saved_frames", disabled=not save_frames)
     save_interval = st.sidebar.slider("Save every N frames", 1, 60, 10, 1, disabled=not save_frames, help="Higher values save fewer frames to reduce disk usage")
     max_saved = st.sidebar.slider("Max saved frames", 10, 200, 50, 10, disabled=not save_frames, help="Oldest frames auto-deleted when limit reached")
+    max_repeat_saves = st.sidebar.slider("Max same-scene saves", 2, 4, 4, 1, disabled=not save_frames, help="Avoid saving too many duplicate frames of the same detections")
 
     st.sidebar.markdown('<div class="sb-heading" style="margin-top:16px;">◈ Audio Alerts</div>', unsafe_allow_html=True)
     audio_alerts = st.sidebar.checkbox("Enable text-to-speech alerts", value=False)
@@ -1246,6 +1326,8 @@ def render_sidebar():
         "show_fps":     show_fps,
         "flip_camera":  flip,
         "max_fps":      max_fps,
+        "prod_opt":     prod_opt,
+        "proc_scale":   proc_scale,
         "hand_detect":  hand_detect,
         "hand_conf":    hand_conf,
         "face_detect":  face_detect,
@@ -1256,6 +1338,7 @@ def render_sidebar():
         "save_folder":  save_folder,
         "save_interval": save_interval,
         "max_saved":     max_saved,
+        "max_repeat_saves": max_repeat_saves,
         "audio_alerts": audio_alerts,
     }
 
@@ -1291,8 +1374,28 @@ _WEBRTC_FACE_DETECTOR = None
 _WEBRTC_PSYS = None
 _WEBRTC_PREV_T = 0.0
 _WEBRTC_LAST_HUMAN_ALERT = 0.0
+_WEBRTC_HUMAN_LATCH = False
 _WEBRTC_LAST_GESTURE_ALERT = 0.0
 _WEBRTC_LAST_EXPRESSION_ALERT = 0.0
+_WEBRTC_LAST_OBJECT_ALERT = 0.0
+_WEBRTC_LAST_OBJECT_CLASS = ""
+_WEBRTC_LAST_FRAME_TS = 0.0
+_WEBRTC_CB_ERRORS = 0
+_WEBRTC_LAST_ERR = ""
+_WEBRTC_STREAM_W = 0
+_WEBRTC_STREAM_H = 0
+_WEBRTC_LAST_SAVE_SIG = ""
+_WEBRTC_SAVE_STREAK = 0
+_WEBRTC_MAX_REPEAT_SAVES = 4
+_WEBRTC_HAND_LAST_ERR = ""
+_WEBRTC_FACE_LAST_ERR = ""
+_WEBRTC_PROD_OPT = True
+_WEBRTC_PROC_SCALE = 1.0
+
+
+def _build_rtc_configuration():
+    # Keep RTC config simple and dependency-free.
+    return {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
 
 
 def run_browser_detection(config, model):
@@ -1304,7 +1407,14 @@ def run_browser_detection(config, model):
     global _WEBRTC_PARTICLE_FX, _WEBRTC_PARTICLE_N, _WEBRTC_AUDIO_ALERTS
     global _WEBRTC_DET_COUNTS, _WEBRTC_HUMAN, _WEBRTC_GESTURES, _WEBRTC_FACES
     global _WEBRTC_HAND_DETECTOR, _WEBRTC_FACE_DETECTOR, _WEBRTC_PSYS, _WEBRTC_PREV_T
-    global _WEBRTC_LAST_HUMAN_ALERT, _WEBRTC_LAST_GESTURE_ALERT, _WEBRTC_LAST_EXPRESSION_ALERT
+    global _WEBRTC_LAST_HUMAN_ALERT, _WEBRTC_HUMAN_LATCH
+    global _WEBRTC_LAST_GESTURE_ALERT, _WEBRTC_LAST_EXPRESSION_ALERT
+    global _WEBRTC_LAST_OBJECT_ALERT, _WEBRTC_LAST_OBJECT_CLASS
+    global _WEBRTC_LAST_FRAME_TS, _WEBRTC_CB_ERRORS, _WEBRTC_LAST_ERR
+    global _WEBRTC_STREAM_W, _WEBRTC_STREAM_H
+    global _WEBRTC_LAST_SAVE_SIG, _WEBRTC_SAVE_STREAK, _WEBRTC_MAX_REPEAT_SAVES
+    global _WEBRTC_HAND_LAST_ERR, _WEBRTC_FACE_LAST_ERR
+    global _WEBRTC_PROD_OPT, _WEBRTC_PROC_SCALE
 
     if not _WEBRTC_OK:
         error_msg = _WEBRTC_ERROR if "_WEBRTC_ERROR" in globals() else "Import failed"
@@ -1312,21 +1422,30 @@ def run_browser_detection(config, model):
         st.code("pip install streamlit-webrtc av", language="bash")
         return
 
-    # Store config in module-level globals
+    # App-level stop button in the same left position as Start Detection
+    stop_col, _ = st.columns([1, 3])
+    with stop_col:
+        stop = st.button("⏹ Stop Detection", type="secondary", key="stop_btn_webrtc")
+    if stop:
+        st.session_state["running"] = False
+        st.session_state["_webrtc_cfg_sig"] = None
+        st.rerun()
+        return
+
+    # Keep callback config synced each rerun
     _WEBRTC_MODEL = model
     _WEBRTC_CONF = config["confidence"]
     _WEBRTC_IOU = config["iou"]
     _WEBRTC_FLIP = config["flip_camera"]
     _WEBRTC_SHOW_FPS = config["show_fps"]
     _WEBRTC_MODEL_NAME = config["model"].upper()
+    _WEBRTC_PROD_OPT = config["prod_opt"]
+    _WEBRTC_PROC_SCALE = config["proc_scale"]
     _WEBRTC_SAVE = config["save_frames"]
     _WEBRTC_SAVE_FOLDER = config["save_folder"]
     _WEBRTC_SAVE_INTERVAL = config["save_interval"]
     _WEBRTC_MAX_SAVED = config["max_saved"]
-    _WEBRTC_FRAME_N = 0
-    _WEBRTC_TOTAL_DETS = 0
-    _WEBRTC_FPS = 0.0
-    _WEBRTC_T0 = time.perf_counter()
+    _WEBRTC_MAX_REPEAT_SAVES = config["max_repeat_saves"]
     _WEBRTC_HAND_DETECT = config["hand_detect"] and _MP_OK
     _WEBRTC_HAND_CONF = config["hand_conf"]
     _WEBRTC_FACE_DETECT = config["face_detect"] and _MP_OK
@@ -1342,36 +1461,58 @@ def run_browser_detection(config, model):
     _WEBRTC_PARTICLE_FX = config["particle_fx"] and config["hand_detect"]
     _WEBRTC_PARTICLE_N = config["particle_n"]
     _WEBRTC_AUDIO_ALERTS = config["audio_alerts"]
-    _WEBRTC_DET_COUNTS = collections.Counter()
-    _WEBRTC_HUMAN = False
-    _WEBRTC_GESTURES = []
-    _WEBRTC_FACES = []
-    _WEBRTC_LAST_HUMAN_ALERT = 0.0
-    _WEBRTC_LAST_GESTURE_ALERT = 0.0
-    _WEBRTC_LAST_EXPRESSION_ALERT = 0.0
 
-    # Init hand/face detectors
-    if _WEBRTC_HAND_DETECT:
-        _WEBRTC_HAND_DETECTOR = _get_hand_detector(min_conf=_WEBRTC_HAND_CONF)
-    else:
-        _WEBRTC_HAND_DETECTOR = None
-    if _WEBRTC_FACE_DETECT:
-        _WEBRTC_FACE_DETECTOR = _get_face_detector(min_conf=_WEBRTC_FACE_CONF)
-    else:
-        _WEBRTC_FACE_DETECTOR = None
-    if _WEBRTC_PARTICLE_FX:
-        _WEBRTC_PSYS = ParticleSystem(max_particles=_WEBRTC_PARTICLE_N)
-    else:
-        _WEBRTC_PSYS = None
-    _WEBRTC_PREV_T = time.perf_counter()
-
-    # Init TTS
-    if _WEBRTC_AUDIO_ALERTS:
-        _init_tts()
-
-    # Create save folder
-    if _WEBRTC_SAVE:
-        os.makedirs(_WEBRTC_SAVE_FOLDER, exist_ok=True)
+    # Initialize heavy browser-camera runtime only when config actually changes
+    cfg_sig = (
+        config["model"], config["confidence"], config["iou"], config["flip_camera"], config["show_fps"],
+        config["prod_opt"], config["proc_scale"],
+        config["save_frames"], config["save_folder"], config["save_interval"], config["max_saved"],
+        config["max_repeat_saves"],
+        config["hand_detect"], config["hand_conf"], config["face_detect"], config["face_conf"],
+        config["particle_fx"], config["particle_n"], config["audio_alerts"],
+    )
+    if st.session_state.get("_webrtc_cfg_sig") != cfg_sig:
+        st.session_state["_webrtc_cfg_sig"] = cfg_sig
+        _WEBRTC_FRAME_N = 0
+        _WEBRTC_TOTAL_DETS = 0
+        _WEBRTC_FPS = 0.0
+        _WEBRTC_T0 = time.perf_counter()
+        _WEBRTC_DET_COUNTS = collections.Counter()
+        _WEBRTC_HUMAN = False
+        _WEBRTC_GESTURES = []
+        _WEBRTC_FACES = []
+        _WEBRTC_LAST_HUMAN_ALERT = 0.0
+        _WEBRTC_HUMAN_LATCH = False
+        _WEBRTC_LAST_GESTURE_ALERT = 0.0
+        _WEBRTC_LAST_EXPRESSION_ALERT = 0.0
+        _WEBRTC_LAST_OBJECT_ALERT = 0.0
+        _WEBRTC_LAST_OBJECT_CLASS = ""
+        _WEBRTC_LAST_FRAME_TS = 0.0
+        _WEBRTC_CB_ERRORS = 0
+        _WEBRTC_LAST_ERR = ""
+        _WEBRTC_STREAM_W = 0
+        _WEBRTC_STREAM_H = 0
+        _WEBRTC_LAST_SAVE_SIG = ""
+        _WEBRTC_SAVE_STREAK = 0
+        _WEBRTC_HAND_LAST_ERR = ""
+        _WEBRTC_FACE_LAST_ERR = ""
+        if _WEBRTC_HAND_DETECT:
+            _WEBRTC_HAND_DETECTOR = _get_hand_detector(min_conf=_WEBRTC_HAND_CONF)
+        else:
+            _WEBRTC_HAND_DETECTOR = None
+        if _WEBRTC_FACE_DETECT:
+            _WEBRTC_FACE_DETECTOR = _get_face_detector(min_conf=_WEBRTC_FACE_CONF)
+        else:
+            _WEBRTC_FACE_DETECTOR = None
+        if _WEBRTC_PARTICLE_FX:
+            _WEBRTC_PSYS = ParticleSystem(max_particles=_WEBRTC_PARTICLE_N)
+        else:
+            _WEBRTC_PSYS = None
+        _WEBRTC_PREV_T = time.perf_counter()
+        if _WEBRTC_AUDIO_ALERTS:
+            _init_tts()
+        if _WEBRTC_SAVE:
+            os.makedirs(_WEBRTC_SAVE_FOLDER, exist_ok=True)
 
     # Layout — same as local camera (no tabs during live)
     col_feed, col_panel = st.columns([3, 1], gap="large")
@@ -1380,8 +1521,8 @@ def run_browser_detection(config, model):
         st.markdown("""
         <div class="action-bar">
             <div class="action-bar-left">
-                <div class="action-bar-title">Browser Webcam Feed</div>
-                <div class="action-bar-sub">Real-time inference via browser webcam</div>
+                <div class="action-bar-title">Live Detection Feed</div>
+                <div class="action-bar-sub">Browser webcam inference — same layout as local camera mode</div>
             </div>
         </div>""", unsafe_allow_html=True)
 
@@ -1397,143 +1538,192 @@ def run_browser_detection(config, model):
     def video_frame_callback(frame):
         global _WEBRTC_FRAME_N, _WEBRTC_TOTAL_DETS, _WEBRTC_FPS
         global _WEBRTC_DET_COUNTS, _WEBRTC_HUMAN, _WEBRTC_GESTURES, _WEBRTC_FACES
-        global _WEBRTC_PREV_T, _WEBRTC_LAST_HUMAN_ALERT, _WEBRTC_LAST_GESTURE_ALERT
-        global _WEBRTC_LAST_EXPRESSION_ALERT
+        global _WEBRTC_PREV_T, _WEBRTC_LAST_HUMAN_ALERT, _WEBRTC_HUMAN_LATCH
+        global _WEBRTC_LAST_GESTURE_ALERT, _WEBRTC_LAST_EXPRESSION_ALERT
+        global _WEBRTC_LAST_OBJECT_ALERT, _WEBRTC_LAST_OBJECT_CLASS
+        global _WEBRTC_LAST_FRAME_TS
+        global _WEBRTC_CB_ERRORS, _WEBRTC_LAST_ERR, _WEBRTC_STREAM_W, _WEBRTC_STREAM_H
+        global _WEBRTC_LAST_SAVE_SIG, _WEBRTC_SAVE_STREAK
+        global _WEBRTC_HAND_LAST_ERR, _WEBRTC_FACE_LAST_ERR
 
-        img = frame.to_ndarray(format="bgr24")
-
-        # Flip if mirror enabled
-        if _WEBRTC_FLIP:
-            img = cv2.flip(img, 1)
-
-        img = to_cpu_mat(img)
-
-        # ── Object detection ─────────────────────────────
         try:
-            ann, dets, det_counts, human = detect_objects(
-                img, _WEBRTC_MODEL, _WEBRTC_CONF, _WEBRTC_IOU)
-        except Exception:
-            ann = img
-            dets = []
-            det_counts = collections.Counter()
-            human = False
+            img = frame.to_ndarray(format="bgr24")
+            if _WEBRTC_FLIP:
+                img = cv2.flip(img, 1)
+            img = to_cpu_mat(img)
+            _WEBRTC_STREAM_H, _WEBRTC_STREAM_W = img.shape[:2]
+            proc_img, proc_scale = _resize_for_processing(img, _WEBRTC_PROC_SCALE if _WEBRTC_PROD_OPT else 1.0)
+            ann = proc_img.copy()
 
-        _WEBRTC_DET_COUNTS = det_counts
-        _WEBRTC_HUMAN = human
-
-        # ── Hand detection ───────────────────────────────
-        HAND_SKIP = 3
-        if _WEBRTC_HAND_DETECTOR is not None and _WEBRTC_FRAME_N % HAND_SKIP == 0:
+            # ── Object detection ─────────────────────────────
             try:
-                small = cv2.resize(img, (0, 0), fx=0.5, fy=0.5)
-                _WEBRTC_GESTURES = detect_hands(small, _WEBRTC_HAND_DETECTOR)
+                ann, dets, det_counts, human = detect_objects(
+                    proc_img, _WEBRTC_MODEL, _WEBRTC_CONF, _WEBRTC_IOU)
             except Exception:
-                _WEBRTC_GESTURES = []
-        gestures = _WEBRTC_GESTURES if _WEBRTC_HAND_DETECTOR is not None else []
-        if gestures:
-            ann = draw_hands(ann, gestures)
+                ann = img
+                dets = []
+                det_counts = collections.Counter()
+                human = False
 
-        # ── Face detection ───────────────────────────────
-        FACE_SKIP = 4
-        if _WEBRTC_FACE_DETECTOR is not None and _WEBRTC_FRAME_N % FACE_SKIP == 0:
-            try:
-                small = cv2.resize(img, (0, 0), fx=0.5, fy=0.5)
-                _WEBRTC_FACES = detect_faces(small, _WEBRTC_FACE_DETECTOR)
-            except Exception:
-                _WEBRTC_FACES = []
-        faces = _WEBRTC_FACES if _WEBRTC_FACE_DETECTOR is not None else []
-        if faces:
-            ann = draw_faces(ann, faces)
+            _WEBRTC_DET_COUNTS = det_counts
+            _WEBRTC_HUMAN = human
 
-        # ── Particle effects ─────────────────────────────
-        if _WEBRTC_PSYS is not None:
-            now_t = time.perf_counter()
-            dt = min(now_t - _WEBRTC_PREV_T, 0.1)
-            _WEBRTC_PREV_T = now_t
-            fh, fw = ann.shape[:2]
+            # ── Hand detection ───────────────────────────────
+            HAND_SKIP = 4 if _WEBRTC_PROD_OPT else 3
+            if _WEBRTC_HAND_DETECTOR is not None and _WEBRTC_FRAME_N % HAND_SKIP == 0:
+                try:
+                    hand_in = proc_img if max(proc_img.shape[:2]) <= 1280 else cv2.resize(proc_img, (0, 0), fx=0.75, fy=0.75)
+                    _WEBRTC_GESTURES = detect_hands(hand_in, _WEBRTC_HAND_DETECTOR)
+                    _WEBRTC_HAND_LAST_ERR = ""
+                except Exception as hand_exc:
+                    _WEBRTC_HAND_LAST_ERR = str(hand_exc)[:180]
+                    _WEBRTC_GESTURES = []
+            gestures = _WEBRTC_GESTURES if _WEBRTC_HAND_DETECTOR is not None else []
             if gestures:
-                g = gestures[0]
-                lm = g["landmarks"].landmark
-                pcx, pcy = _palm_center(lm, fw, fh)
-                gest = g["gesture"]
-                dx, dy = None, None
-                if gest in ("Pointing", "Peace"):
-                    dx, dy = _pointing_dir(lm, fw, fh)
-                _spawn_for_gesture(_WEBRTC_PSYS, gest, pcx, pcy, dx, dy)
-                _WEBRTC_PSYS.update(dt, gest, pcx, pcy, dx, dy, fw, fh)
-            else:
-                _WEBRTC_PSYS.update(dt, fw=fw, fh=fh)
-            ann = _WEBRTC_PSYS.render(ann)
+                ann = draw_hands(ann, gestures)
 
-        # ── Audio alerts ────────────────────────────────
-        if _WEBRTC_AUDIO_ALERTS:
-            now = time.perf_counter()
-            ALERT_COOLDOWN = 3.0
-            if human and now - _WEBRTC_LAST_HUMAN_ALERT > ALERT_COOLDOWN:
-                _speak("Human detected")
-                _WEBRTC_LAST_HUMAN_ALERT = now
-            if gestures:
-                gest = gestures[0]["gesture"]
-                if now - _WEBRTC_LAST_GESTURE_ALERT > ALERT_COOLDOWN:
-                    _speak(f"{gest} detected")
-                    _WEBRTC_LAST_GESTURE_ALERT = now
+            # ── Face detection ───────────────────────────────
+            FACE_SKIP = 6 if _WEBRTC_PROD_OPT else 4
+            if _WEBRTC_FACE_DETECTOR is not None and _WEBRTC_FRAME_N % FACE_SKIP == 0:
+                try:
+                    face_in = proc_img if max(proc_img.shape[:2]) <= 1280 else cv2.resize(proc_img, (0, 0), fx=0.75, fy=0.75)
+                    _WEBRTC_FACES = detect_faces(face_in, _WEBRTC_FACE_DETECTOR)
+                    _WEBRTC_FACE_LAST_ERR = ""
+                except Exception as face_exc:
+                    _WEBRTC_FACE_LAST_ERR = str(face_exc)[:180]
+                    _WEBRTC_FACES = []
+            faces = _WEBRTC_FACES if _WEBRTC_FACE_DETECTOR is not None else []
             if faces:
-                expr = faces[0]["expression"]
-                if now - _WEBRTC_LAST_EXPRESSION_ALERT > ALERT_COOLDOWN:
-                    _speak(f"{expr} expression detected")
-                    _WEBRTC_LAST_EXPRESSION_ALERT = now
+                ann = draw_faces(ann, faces)
 
-        # ── Save frame ──────────────────────────────────
-        _WEBRTC_FRAME_N += 1
-        _WEBRTC_TOTAL_DETS += len(dets)
-        if _WEBRTC_SAVE and len(dets) > 0 and _WEBRTC_FRAME_N % _WEBRTC_SAVE_INTERVAL == 0:
-            timestamp = time.strftime("%Y%m%d_%H%M%S")
-            filename = os.path.join(_WEBRTC_SAVE_FOLDER, f"frame_{timestamp}_{_WEBRTC_FRAME_N}.jpg")
-            cv2.imwrite(filename, to_cpu_mat(ann))
+            # ── Particle effects ─────────────────────────────
+            if _WEBRTC_PSYS is not None:
+                now_t = time.perf_counter()
+                dt = min(now_t - _WEBRTC_PREV_T, 0.1)
+                _WEBRTC_PREV_T = now_t
+                fh, fw = ann.shape[:2]
+                if gestures:
+                    g = gestures[0]
+                    lm = g["landmarks"].landmark
+                    pcx, pcy = _palm_center(lm, fw, fh)
+                    gest = g["gesture"]
+                    dx, dy = None, None
+                    if gest in ("Pointing", "Peace"):
+                        dx, dy = _pointing_dir(lm, fw, fh)
+                    _spawn_for_gesture(_WEBRTC_PSYS, gest, pcx, pcy, dx, dy)
+                    _WEBRTC_PSYS.update(dt, gest, pcx, pcy, dx, dy, fw, fh)
+                else:
+                    _WEBRTC_PSYS.update(dt, fw=fw, fh=fh)
+                ann = _WEBRTC_PSYS.render(ann)
+
+            # ── Audio alerts ────────────────────────────────
+            if _WEBRTC_AUDIO_ALERTS:
+                now = time.perf_counter()
+                ALERT_COOLDOWN = 3.0
+                # Speak human only on transition (avoid repeating forever).
+                if human and (not _WEBRTC_HUMAN_LATCH) and now - _WEBRTC_LAST_HUMAN_ALERT > ALERT_COOLDOWN:
+                    _speak("Human detected")
+                    _WEBRTC_LAST_HUMAN_ALERT = now
+                    _WEBRTC_HUMAN_LATCH = True
+                if not human:
+                    _WEBRTC_HUMAN_LATCH = False
+
+                # Speak prominent non-person object class when it appears/changes.
+                non_person = [(k, v) for k, v in det_counts.items() if k.lower() != "person"]
+                if non_person:
+                    obj_name, _ = max(non_person, key=lambda kv: kv[1])
+                    if (
+                        (obj_name != _WEBRTC_LAST_OBJECT_CLASS) and
+                        (now - _WEBRTC_LAST_OBJECT_ALERT > ALERT_COOLDOWN)
+                    ):
+                        _speak(f"{obj_name} detected")
+                        _WEBRTC_LAST_OBJECT_ALERT = now
+                        _WEBRTC_LAST_OBJECT_CLASS = obj_name
+                if gestures:
+                    gest = gestures[0]["gesture"]
+                    if now - _WEBRTC_LAST_GESTURE_ALERT > ALERT_COOLDOWN:
+                        _speak(f"{gest} detected")
+                        _WEBRTC_LAST_GESTURE_ALERT = now
+                if faces:
+                    expr = faces[0]["expression"]
+                    if now - _WEBRTC_LAST_EXPRESSION_ALERT > ALERT_COOLDOWN:
+                        _speak(f"{expr} expression detected")
+                        _WEBRTC_LAST_EXPRESSION_ALERT = now
+
+            # ── Save frame ──────────────────────────────────
+            _WEBRTC_FRAME_N += 1
+            _WEBRTC_LAST_FRAME_TS = time.perf_counter()
+            _WEBRTC_TOTAL_DETS += len(dets)
+            if _WEBRTC_SAVE and len(dets) > 0 and _WEBRTC_FRAME_N % _WEBRTC_SAVE_INTERVAL == 0:
+                scene_sig = _scene_signature_from_counts(det_counts)
+                can_save, _WEBRTC_LAST_SAVE_SIG, _WEBRTC_SAVE_STREAK = _allow_scene_save(
+                    scene_sig, _WEBRTC_LAST_SAVE_SIG, _WEBRTC_SAVE_STREAK, _WEBRTC_MAX_REPEAT_SAVES
+                )
+                if can_save:
+                    timestamp = time.strftime("%Y%m%d_%H%M%S")
+                    filename = os.path.join(_WEBRTC_SAVE_FOLDER, f"frame_{timestamp}_{_WEBRTC_FRAME_N}.jpg")
+                    cv2.imwrite(filename, to_cpu_mat(ann))
+                    try:
+                        existing = sorted([f for f in os.listdir(_WEBRTC_SAVE_FOLDER) if f.lower().endswith((".jpg", ".jpeg", ".png"))])
+                        while len(existing) > _WEBRTC_MAX_SAVED:
+                            os.remove(os.path.join(_WEBRTC_SAVE_FOLDER, existing.pop(0)))
+                    except Exception:
+                        pass
+
+            if proc_scale < 0.999:
+                ann = cv2.resize(ann, (img.shape[1], img.shape[0]), interpolation=cv2.INTER_LINEAR)
+
+            # ── FPS overlay ──────────────────────────────────
+            now = time.perf_counter()
+            elapsed = now - _WEBRTC_T0
+            _WEBRTC_FPS = _WEBRTC_FRAME_N / max(elapsed, 0.001)
+
+            if _WEBRTC_SHOW_FPS:
+                cv2.putText(ann, f"FPS  {_WEBRTC_FPS:.1f}",
+                    (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.65,
+                    (0, 212, 126), 2, cv2.LINE_AA)
+                cv2.putText(ann, _WEBRTC_MODEL_NAME,
+                    (12, 48), cv2.FONT_HERSHEY_SIMPLEX, 0.36,
+                    (140, 150, 165), 1, cv2.LINE_AA)
+
+            ts = time.strftime("%H:%M:%S")
+            fw_px = ann.shape[1]
+            (tsw, _), _ = cv2.getTextSize(ts, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
+            cv2.putText(ann, ts, (fw_px - tsw - 10, 22),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (120, 120, 145), 1, cv2.LINE_AA)
+
+            if _WEBRTC_SHOW_FPS:
+                y_off = 68
+                if gestures:
+                    cv2.putText(ann, f"Hands {len(gestures)}",
+                        (12, y_off), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.36, (34, 211, 238), 1, cv2.LINE_AA)
+                    y_off += 20
+                if faces:
+                    cv2.putText(ann, f"Faces {len(faces)}",
+                        (12, y_off), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.36, (200, 130, 255), 1, cv2.LINE_AA)
+                    y_off += 20
+                if _WEBRTC_PSYS is not None and _WEBRTC_PSYS.count > 0:
+                    cv2.putText(ann, f"Particles {_WEBRTC_PSYS.count}",
+                        (12, y_off), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.36, (200, 200, 100), 1, cv2.LINE_AA)
+
+            return av.VideoFrame.from_ndarray(to_cpu_mat(ann), format="bgr24")
+        except Exception as cb_exc:
+            _WEBRTC_CB_ERRORS += 1
+            _WEBRTC_LAST_ERR = str(cb_exc)[:180]
+            fallback = frame.to_ndarray(format="bgr24")
             try:
-                existing = sorted([f for f in os.listdir(_WEBRTC_SAVE_FOLDER) if f.lower().endswith((".jpg", ".jpeg", ".png"))])
-                while len(existing) > _WEBRTC_MAX_SAVED:
-                    os.remove(os.path.join(_WEBRTC_SAVE_FOLDER, existing.pop(0)))
+                fh, fw = fallback.shape[:2]
+                _WEBRTC_STREAM_W = int(fw)
+                _WEBRTC_STREAM_H = int(fh)
             except Exception:
                 pass
-
-        # ── FPS overlay ──────────────────────────────────
-        now = time.perf_counter()
-        elapsed = now - _WEBRTC_T0
-        _WEBRTC_FPS = _WEBRTC_FRAME_N / max(elapsed, 0.001)
-
-        if _WEBRTC_SHOW_FPS:
-            cv2.putText(ann, f"FPS  {_WEBRTC_FPS:.1f}",
-                (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.65,
-                (0, 212, 126), 2, cv2.LINE_AA)
-            cv2.putText(ann, _WEBRTC_MODEL_NAME,
-                (12, 48), cv2.FONT_HERSHEY_SIMPLEX, 0.36,
-                (140, 150, 165), 1, cv2.LINE_AA)
-
-        ts = time.strftime("%H:%M:%S")
-        fw_px = ann.shape[1]
-        (tsw, _), _ = cv2.getTextSize(ts, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
-        cv2.putText(ann, ts, (fw_px - tsw - 10, 22),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (120, 120, 145), 1, cv2.LINE_AA)
-
-        if _WEBRTC_SHOW_FPS:
-            y_off = 68
-            if gestures:
-                cv2.putText(ann, f"Hands {len(gestures)}",
-                    (12, y_off), cv2.FONT_HERSHEY_SIMPLEX,
-                    0.36, (34, 211, 238), 1, cv2.LINE_AA)
-                y_off += 20
-            if faces:
-                cv2.putText(ann, f"Faces {len(faces)}",
-                    (12, y_off), cv2.FONT_HERSHEY_SIMPLEX,
-                    0.36, (200, 130, 255), 1, cv2.LINE_AA)
-                y_off += 20
-            if _WEBRTC_PSYS is not None and _WEBRTC_PSYS.count > 0:
-                cv2.putText(ann, f"Particles {_WEBRTC_PSYS.count}",
-                    (12, y_off), cv2.FONT_HERSHEY_SIMPLEX,
-                    0.36, (200, 200, 100), 1, cv2.LINE_AA)
-
-        return av.VideoFrame.from_ndarray(to_cpu_mat(ann), format="bgr24")
+            _WEBRTC_FRAME_N += 1
+            _WEBRTC_LAST_FRAME_TS = time.perf_counter()
+            _WEBRTC_FPS = _WEBRTC_FRAME_N / max(_WEBRTC_LAST_FRAME_TS - _WEBRTC_T0, 0.001)
+            return av.VideoFrame.from_ndarray(to_cpu_mat(fallback), format="bgr24")
 
     # ── Side panel display (auto-refresh) ───────────────
     def _render_panel():
@@ -1548,6 +1738,7 @@ def run_browser_detection(config, model):
                 <span class="fps-unit">fps</span>
             </div>
             <div class="fps-sub">Frame #{_WEBRTC_FRAME_N:,}</div>
+            <div class="fps-sub">Stream {_WEBRTC_STREAM_W} × {_WEBRTC_STREAM_H}</div>
         </div>""", unsafe_allow_html=True)
 
         if _WEBRTC_HUMAN:
@@ -1661,7 +1852,7 @@ def run_browser_detection(config, model):
                     </div>
                 </div>""", unsafe_allow_html=True)
 
-        elapsed = time.perf_counter() - _WEBRTC_T0
+        elapsed = 0.0 if _WEBRTC_FRAME_N == 0 else (time.perf_counter() - _WEBRTC_T0)
         m, s = divmod(int(elapsed), 60)
         avg = _WEBRTC_TOTAL_DETS / max(_WEBRTC_FRAME_N, 1)
         session_ph.markdown(f"""
@@ -1688,26 +1879,110 @@ def run_browser_detection(config, model):
             </div>
         </div>""", unsafe_allow_html=True)
 
-    _render_panel()
-
     with col_feed:
-        webrtc_streamer(
+        status_ph = st.empty()
+        rtc_cfg = _build_rtc_configuration()
+        webrtc_ctx = webrtc_streamer(
             key="object-detection",
             video_frame_callback=video_frame_callback,
-            async_processing=True,
-            rtc_configuration={
-                "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
-            },
+            mode=WebRtcMode.SENDRECV,
+            async_processing=not (config["hand_detect"] or config["face_detect"] or config["particle_fx"]),
+            rtc_configuration=rtc_cfg,
             media_stream_constraints={
                 "video": {
-                    "width": {"ideal": 1280, "max": 1920},
-                    "height": {"ideal": 720, "max": 1080},
-                    "frameRate": {"ideal": 30, "max": 60},
+                    "facingMode": "user",
+                    "width": {"ideal": int(config["resolution"][0]), "max": 1920},
+                    "height": {"ideal": int(config["resolution"][1]), "max": 1080},
+                    "frameRate": {"ideal": int(config["max_fps"]), "max": 60},
                 },
                 "audio": False,
             },
+            video_html_attrs={
+                "autoPlay": True,
+                "playsInline": True,
+                "muted": True,
+            },
             desired_playing_state=True,
         )
+        st.markdown(
+            '<div class="action-bar-sub" style="margin-top:6px;">Browser camera controls stay inside the video block for a cleaner UI.</div>',
+            unsafe_allow_html=True,
+        )
+
+    # Keep the side panel honest about current stream state.
+    if webrtc_ctx and webrtc_ctx.state.playing:
+        # Local-camera-like panel updates without forcing whole-page reruns.
+        last_frame_n = -1
+        last_render_t = 0.0
+        idle_ticks = 0
+        MAX_IDLE_TICKS = 40  # ~12s at 0.3s interval
+        while st.session_state.get("running", False):
+            if _WEBRTC_FRAME_N > 0:
+                now_t = time.perf_counter()
+                if _WEBRTC_FRAME_N != last_frame_n or (now_t - last_render_t) > 1.0:
+                    _render_panel()
+                    status_ph.empty()
+                    last_render_t = now_t
+                    last_frame_n = _WEBRTC_FRAME_N
+            else:
+                with col_panel:
+                    fps_ph.markdown("""
+                    <div class="sp">
+                        <div class="sp-head">
+                            <div class="sp-icon green">◈</div>
+                            <span class="sp-title">Performance</span>
+                        </div>
+                        <div class="det-empty">
+                            <span class="det-icon">◎</span>
+                            <span>Waiting for first frame…</span>
+                        </div>
+                    </div>""", unsafe_allow_html=True)
+                    alert_ph.empty()
+                    detlist_ph.empty()
+                    gesture_ph.empty()
+                    expr_ph.empty()
+                    session_ph.empty()
+                status_ph.info("Webcam stream is connected but no frames processed yet. If this persists, click STOP then START in the webcam box.")
+
+            if _WEBRTC_CB_ERRORS > 0:
+                status_ph.warning(f"Webcam callback errors: {_WEBRTC_CB_ERRORS}. Last error: {_WEBRTC_LAST_ERR}")
+            elif _WEBRTC_HAND_LAST_ERR or _WEBRTC_FACE_LAST_ERR:
+                warn_parts = []
+                if _WEBRTC_HAND_LAST_ERR:
+                    warn_parts.append(f"hand: {_WEBRTC_HAND_LAST_ERR}")
+                if _WEBRTC_FACE_LAST_ERR:
+                    warn_parts.append(f"face: {_WEBRTC_FACE_LAST_ERR}")
+                status_ph.warning("MediaPipe issue: " + " | ".join(warn_parts))
+
+            if _WEBRTC_FRAME_N == last_frame_n:
+                idle_ticks += 1
+            else:
+                idle_ticks = 0
+
+            if idle_ticks >= MAX_IDLE_TICKS:
+                break
+            time.sleep(0.3)
+    else:
+        with col_feed:
+            status_ph = st.empty()
+            status_ph.info("Browser camera is idle. Click START in the webcam block, then allow browser permission if prompted.")
+        with col_panel:
+            fps_ph.markdown("""
+            <div class="sp">
+                <div class="sp-head">
+                    <div class="sp-icon green">◈</div>
+                    <span class="sp-title">Performance</span>
+                </div>
+                <div class="det-empty">
+                    <span class="det-icon">◎</span>
+                    <span>Click START in webcam panel and allow camera access</span>
+                </div>
+            </div>""", unsafe_allow_html=True)
+            alert_ph.empty()
+            detlist_ph.empty()
+            gesture_ph.empty()
+            expr_ph.empty()
+            session_ph.empty()
 
     # ── Saved Frames (below feed, same as local camera) ──
     save_dir = config.get("save_folder", "./saved_frames")
@@ -1857,9 +2132,14 @@ def run_detection(config, model):
         _init_tts()
         _speak("Audio alerts enabled")
     last_human_alert = 0
+    human_latch = False
     last_gesture_time = 0
     last_expression_time = 0
+    last_object_time = 0
+    last_object_class = ""
     ALERT_COOLDOWN = 3.0
+    last_save_sig = ""
+    save_streak = 0
 
     # ── Create save folder if needed ─────────────────────
     if config["save_frames"]:
@@ -1937,9 +2217,19 @@ def run_detection(config, model):
             # ── Audio alerts ─────────────────────────────────────
             if config["audio_alerts"]:
                 now = time.perf_counter()
-                if human and now - last_human_alert > ALERT_COOLDOWN:
+                if human and (not human_latch) and now - last_human_alert > ALERT_COOLDOWN:
                     _speak("Human detected")
                     last_human_alert = now
+                    human_latch = True
+                if not human:
+                    human_latch = False
+                non_person = [(k, v) for k, v in det_counts.items() if k.lower() != "person"]
+                if non_person:
+                    obj_name, _ = max(non_person, key=lambda kv: kv[1])
+                    if obj_name != last_object_class and now - last_object_time > ALERT_COOLDOWN:
+                        _speak(f"{obj_name} detected")
+                        last_object_time = now
+                        last_object_class = obj_name
                 if gestures:
                     gest = gestures[0]["gesture"]
                     if now - last_gesture_time > ALERT_COOLDOWN:
@@ -1955,16 +2245,21 @@ def run_detection(config, model):
 
             # ── Save frame if enabled, detections exist, and interval matches ───────
             if config["save_frames"] and len(dets) > 0 and frame_n % config["save_interval"] == 0:
-                timestamp = time.strftime("%Y%m%d_%H%M%S")
-                filename = f"{config['save_folder']}/frame_{timestamp}_{frame_n}.jpg"
-                cv2.imwrite(filename, ann)
-                # Auto-cleanup: delete oldest frames if over max
-                try:
-                    existing = sorted([f for f in os.listdir(config["save_folder"]) if f.lower().endswith((".jpg", ".jpeg", ".png"))])
-                    while len(existing) > config["max_saved"]:
-                        os.remove(os.path.join(config["save_folder"], existing.pop(0)))
-                except Exception:
-                    pass
+                scene_sig = _scene_signature_from_counts(det_counts)
+                can_save, last_save_sig, save_streak = _allow_scene_save(
+                    scene_sig, last_save_sig, save_streak, config["max_repeat_saves"]
+                )
+                if can_save:
+                    timestamp = time.strftime("%Y%m%d_%H%M%S")
+                    filename = f"{config['save_folder']}/frame_{timestamp}_{frame_n}.jpg"
+                    cv2.imwrite(filename, ann)
+                    # Auto-cleanup: delete oldest frames if over max
+                    try:
+                        existing = sorted([f for f in os.listdir(config["save_folder"]) if f.lower().endswith((".jpg", ".jpeg", ".png"))])
+                        while len(existing) > config["max_saved"]:
+                            os.remove(os.path.join(config["save_folder"], existing.pop(0)))
+                    except Exception:
+                        pass
 
             fps_ctr.tick()
             frame_n    += 1
